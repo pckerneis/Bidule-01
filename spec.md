@@ -668,7 +668,8 @@ On power-on or reset:
 4. If load or validation fails, display an error message and prompt: _"Press any button to continue."_ Wait for any button press, then load the built-in cart loader instead.
 5. Global variable table is initialised (empty).
 6. `init()` is called once, if defined.
-7. Main loop begins.
+7. `t` counter is reset.
+8. Main loop begins.
 
 ### 5.2 Main Loop
 

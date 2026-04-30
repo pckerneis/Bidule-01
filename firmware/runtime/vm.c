@@ -522,7 +522,7 @@ int vm_call_audio(int t) {
     set_param(shadow, vm.param_audio_t, t);
     Value result = exec(vm.off_audio, shadow, vm.stack1);
     int32_t s = result.i;
-    return s < 0 ? 0 : s > 255 ? 255 : (int)s;
+    return s & 0xFF;
 }
 
 // Returns true (and clears the flag) if loadcart() was called this frame.

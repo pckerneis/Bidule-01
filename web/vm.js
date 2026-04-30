@@ -137,13 +137,13 @@ export class VM {
     this._run(this._eDraw);
   }
 
-  // Returns the audio sample [0,255], or 128 on error.
+  // Returns the audio sample as the low 8 bits of the cart return value, or 128 on error.
   callAudio(t) {
     if (!this.loaded || this._eAudio === 0xFFFF) return 128;
     this._sp(this._pAT, t);
     try {
       const r = this._run(this._eAudio);
-      return Math.max(0, Math.min(255, r)) | 0;
+      return r & 0xFF;
     } catch {
       return 128;
     }

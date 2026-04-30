@@ -97,6 +97,7 @@ int main(void) {
     // §5.1 steps 4-5: init global table, call init()
     audio_set_callback(vm_call_audio);
     vm_call_init();
+    audio_reset_t();
 
     // §5.2 main loop
     int frame = 0;

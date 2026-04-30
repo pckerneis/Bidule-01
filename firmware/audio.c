@@ -35,3 +35,7 @@ void audio_init(void) {
 void audio_set_callback(int (*fn)(int t)) {
     audio_cb = fn;
 }
+
+void audio_reset_t(void) {
+    audio_t = 0;
+}

@@ -21,6 +21,7 @@ class BiduleAudioProcessor extends AudioWorkletProcessor {
       if (data.type === 'load') {
         try {
           this._vm.load(data.binary);
+          this._vm.callInit();
           this._t = 0;
           this._phase = 0;
         } catch (e) {
