@@ -37,7 +37,10 @@ pico_sdk_init()
 # The C file places the image in .flash_fs which is pinned to 0x10040000
 # by the linker options below, so picotool includes it in the normal UF2.
 find_package(Python3 REQUIRED)
-find_program(NODE_EXECUTABLE node REQUIRED)
+find_program(DENO_EXECUTABLE deno
+    HINTS "$ENV{USERPROFILE}/.deno/bin" "$ENV{HOME}/.deno/bin"
+    REQUIRED
+)
 set(FS_IMAGE_C ${CMAKE_CURRENT_BINARY_DIR}/fs_image.c)
 set(CARTS_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/../carts)
 set(COMPILER_CLI ${CMAKE_CURRENT_SOURCE_DIR}/../compiler/cli.js)
@@ -53,7 +56,7 @@ foreach(CART_SRC ${BDCART_FILES})
     set(CART_OUT "${CARTS_DIR}/${CART_STEM}.bdb")
     add_custom_command(
         OUTPUT  "${CART_OUT}"
-        COMMAND ${NODE_EXECUTABLE} "${COMPILER_CLI}" "${CART_SRC}" "${CART_OUT}"
+        COMMAND ${DENO_EXECUTABLE} run --allow-read --allow-write "${COMPILER_CLI}" "${CART_SRC}" "${CART_OUT}"
         DEPENDS "${CART_SRC}" "${COMPILER_CLI}" "${COMPILER_JS}"
         COMMENT "Compiling ${CART_STEM}.bdcart"
         VERBATIM
@@ -102,7 +105,6 @@ target_include_directories(bidule-01 PRIVATE
 target_link_libraries(bidule-01
         hardware_i2c
         hardware_pwm
-        pico_multicore
         hardware_flash
 )
 

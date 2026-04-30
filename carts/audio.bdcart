@@ -1,0 +1,11 @@
+// @name audio test
+// @author pckerneis
+
+draw(frame) {
+    cls(1)
+    print("bytebeat :)", 2, 2, 0)
+}
+
+audio(t) {
+    return (((t >> 10) & 42) * t) & 255
+}

@@ -3,7 +3,6 @@
 > **Status: Draft / Work in Progress**
 > This document is the authoritative specification for the Bidule 01 platform.
 > Sections marked 🔲 are placeholders pending design decisions.
-> Sections marked ✅ are considered stable.
 
 **Spec version:** 0.3  
 **Last updated:** 2026-04-28
@@ -853,7 +852,7 @@ There is no traditional call stack in v1: the four lifecycle functions are direc
 - Output method: PWM with RC filter
 - PWM configuration: wrap = 255 (8-bit resolution), clkdiv = 1.0 → carrier ≈ 488 kHz
 - Output impedance target: suitable for 1W 8Ω speaker or 3.5mm line out
-- GPIO assignment: GP28 (current firmware default)
+- GPIO assignment: GP0
 - RC filter values: 🔲 _TBD_
 
 ### 7.5 Power

@@ -1,8 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-// PWM audio output pin (§7.4 — GPIO TBD, using GP28 as placeholder)
-#define AUDIO_PIN 28
+#define AUDIO_PIN 0  // GP0, PWM slice 0 channel A
 
 void audio_init(void);
 
