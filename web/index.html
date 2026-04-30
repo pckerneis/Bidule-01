@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bidule 01 — Emulator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Courier New', Courier, monospace;
+      background: linear-gradient(160deg, #0a0a14 0%, #080810 100%);
+      min-height: 100vh;
+      padding: 24px 16px 48px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 24px;
+      color: #aaa;
+    }
+
+    /* ── Console shell ── */
+    .shell {
+      background: linear-gradient(175deg, #222238 0%, #181828 60%, #141422 100%);
+      border-radius: 22px;
+      padding: 20px 20px 26px;
+      width: 100%;
+      max-width: 560px;
+      box-shadow:
+        0 24px 64px rgba(0,0,0,.95),
+        inset 0 1px 0 rgba(255,255,255,.06),
+        inset 0 -3px 0 rgba(0,0,0,.4),
+        0 0 0 1px rgba(255,255,255,.03);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .top-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .brand { color: #2e2e52; font-size: 9px; letter-spacing: 4px; text-transform: uppercase; }
+    .dots  { display: flex; gap: 5px; }
+    .dot   { width: 7px; height: 7px; border-radius: 50%; opacity: .22; }
+
+    #reboot-btn {
+      padding: 3px 9px;
+      border-radius: 4px;
+      font-family: inherit; font-size: 10px; letter-spacing: 1px;
+      cursor: pointer; outline: none;
+      border: 1px solid #2a2a52;
+      background: linear-gradient(160deg, #18183a, #10102a);
+      color: #5555aa;
+      box-shadow: 0 1px 4px rgba(0,0,0,.4);
+      transition: color .1s, border-color .1s;
+    }
+    #reboot-btn:hover  { color: #8888dd; border-color: #4444aa; }
+    #reboot-btn:active { transform: translateY(1px); }
+
+    /* ── Screen ── */
+    .bezel {
+      background: #0a0a10;
+      border-radius: 10px;
+      padding: 10px 14px;
+      box-shadow: inset 0 4px 14px rgba(0,0,0,.98), inset 0 0 0 1px rgba(255,255,255,.02);
+    }
+    .screen-wrap {
+      position: relative;
+      background: #001200;
+      border-radius: 4px;
+      overflow: hidden;
+      line-height: 0;
+    }
+    #screen {
+      display: block;
+      width: 100%;
+      image-rendering: pixelated;
+    }
+    .scanlines {
+      position: absolute; inset: 0; pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom, transparent 0px, transparent 2px,
+        rgba(0,0,0,.18) 2px, rgba(0,0,0,.18) 4px
+      );
+    }
+    .screen-glow {
+      position: absolute; inset: -2px; pointer-events: none;
+      box-shadow: inset 0 0 20px rgba(74,246,38,.06);
+    }
+
+    /* ── Controls row ── */
+    .controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-inline: 4px;
+    }
+
+    /* D-pad */
+    .dpad {
+      display: grid;
+      grid-template-columns: repeat(3, 42px);
+      grid-template-rows:    repeat(3, 42px);
+      gap: 3px;
+    }
+    .dpad-btn {
+      width: 42px; height: 42px;
+      background: linear-gradient(160deg, #2c2c4c, #1e1e34);
+      border: 1px solid #3a3a5e;
+      border-radius: 5px;
+      color: #7070a0;
+      font-size: 15px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      user-select: none; -webkit-user-select: none;
+      outline: none; padding: 0;
+      font-family: inherit;
+      box-shadow: 0 3px 0 #0a0a18, inset 0 1px 0 rgba(255,255,255,.05);
+      touch-action: none;
+    }
+    .dpad-btn:active { transform: translateY(2px); box-shadow: none; }
+    .dpad-nub {
+      width: 42px; height: 42px;
+      background: #14142a;
+      border: 1px solid #2a2a46;
+      border-radius: 4px;
+      box-shadow: inset 0 1px 3px rgba(0,0,0,.8);
+    }
+
+    /* Center label */
+    .center-label {
+      color: #1e1e38; font-size: 9px; letter-spacing: 3px;
+      text-align: center; flex-shrink: 0;
+    }
+    .divider { width: 1px; height: 14px; background: #1e1e38; margin: 0 auto; }
+
+    /* A / B buttons */
+    .ab-group { display: flex; gap: 10px; align-items: flex-end; }
+    .ab-btn {
+      width: 46px; height: 46px; border-radius: 50%;
+      font-size: 13px; font-weight: bold; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      user-select: none; -webkit-user-select: none;
+      outline: none; font-family: inherit; touch-action: none;
+    }
+    .ab-btn:active { transform: translateY(2px); }
+    #btn-a {
+      background: radial-gradient(circle at 40% 35%, #3a1e42, #220f28);
+      border: 2px solid #6a3a7a; color: #c088cc;
+      box-shadow: 0 4px 0 rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.08);
+    }
+    #btn-b {
+      background: radial-gradient(circle at 40% 35%, #1e1e42, #0f0f28);
+      border: 2px solid #3a3a72; color: #8888cc;
+      box-shadow: 0 4px 0 rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.06);
+      margin-bottom: 18px;
+    }
+
+    /* ── Error strip ── */
+    #error {
+      display: none;
+      background: rgba(200,30,30,.12);
+      border: 1px solid rgba(255,80,80,.3);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: #ff6060;
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* ── Hint ── */
+    .hint { color: #1e1e3a; font-size: 10px; line-height: 1.6; text-align: center; }
+
+    /* ── Cart panel ── */
+    .cart-panel {
+      width: 100%;
+      max-width: 560px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .section-label { color: #2a2a4a; font-size: 9px; letter-spacing: 4px; text-transform: uppercase; }
+
+    #add-cart {
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-family: inherit; font-size: 11px; font-weight: bold;
+      letter-spacing: 1px; cursor: pointer; outline: none;
+      border: 1px solid #1a3a1a;
+      background: linear-gradient(160deg, #0c200c, #081208);
+      color: #60cc60;
+      box-shadow: 0 2px 6px rgba(60,200,60,.12);
+    }
+    #add-cart:active { transform: translateY(1px); }
+
+    #cart-list {
+      background: #090914;
+      border: 1px solid #1e1e38;
+      border-radius: 8px;
+      min-height: 60px;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: border-color .15s;
+    }
+    .cart-panel.drag-over #cart-list { border-color: #3a3a72; }
+
+    .empty { color: #2a2a46; font-size: 11px; padding: 10px; text-align: center; }
+
+    .cart-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 5px;
+      border: 1px solid transparent;
+    }
+    .cart-row:hover    { background: #111124; border-color: #2a2a46; }
+    .cart-row.active   { background: #0d1a0d; border-color: #1a3a1a; }
+
+    .cart-name { flex: 1; font-size: 12px; color: #6060a0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cart-row.active .cart-name { color: #60cc60; }
+
+    .cart-btn {
+      width: 28px; height: 28px;
+      border-radius: 4px; cursor: pointer; outline: none;
+      font-family: inherit; font-size: 12px; font-weight: bold;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .cart-btn.run {
+      border: 1px solid #1a3a1a;
+      background: linear-gradient(160deg, #0c200c, #081208);
+      color: #60cc60;
+    }
+    .cart-btn.run:hover  { background: #112411; }
+    .cart-btn.del {
+      border: 1px solid #3a1a1a;
+      background: linear-gradient(160deg, #200c0c, #120808);
+      color: #cc6060;
+    }
+    .cart-btn.del:hover  { background: #241111; }
+    .cart-btn:active { transform: translateY(1px); }
+
+    #file-input { display: none; }
+
+    /* pending-carts notice */
+    #pending-notice {
+      display: none;
+      font-size: 10px; color: #5555aa;
+      background: rgba(60,60,120,.12);
+      border: 1px solid #2a2a52;
+      border-radius: 5px;
+      padding: 5px 10px;
+    }
+
+    /* "new" badge on un-booted carts */
+    .cart-row.pending .cart-name { color: #5555aa; }
+    .new-badge {
+      margin-left: 6px;
+      font-size: 8px; letter-spacing: 1px;
+      color: #5555aa;
+      background: rgba(60,60,120,.25);
+      border: 1px solid #2a2a52;
+      border-radius: 3px;
+      padding: 1px 4px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Console shell ── -->
+  <div class="shell">
+
+    <div class="top-bar">
+      <span class="brand">Bidule 01</span>
+      <button id="reboot-btn" title="Reboot">↺ reboot</button>
+      <div class="dots">
+        <div class="dot" style="background:#ff5555"></div>
+        <div class="dot" style="background:#ffaa33"></div>
+        <div class="dot" style="background:#44cc44"></div>
+      </div>
+    </div>
+
+    <div class="bezel">
+      <div class="screen-wrap">
+        <canvas id="screen" width="512" height="256"></canvas>
+        <div class="scanlines"></div>
+        <div class="screen-glow"></div>
+      </div>
+    </div>
+
+    <div class="controls">
+
+      <!-- D-pad -->
+      <div class="dpad">
+        <div></div>
+        <button class="dpad-btn" id="btn-up">▲</button>
+        <div></div>
+        <button class="dpad-btn" id="btn-left">◀</button>
+        <div class="dpad-nub"></div>
+        <button class="dpad-btn" id="btn-right">▶</button>
+        <div></div>
+        <button class="dpad-btn" id="btn-down">▼</button>
+        <div></div>
+      </div>
+
+      <!-- Wordmark -->
+      <div class="center-label">
+        <div class="divider"></div>
+        <div style="margin:6px 0;letter-spacing:3px">MDC</div>
+        <div class="divider"></div>
+      </div>
+
+      <!-- A / B -->
+      <div class="ab-group">
+        <button class="ab-btn" id="btn-b">B</button>
+        <button class="ab-btn" id="btn-a">A</button>
+      </div>
+
+    </div>
+
+    <!-- Error strip -->
+    <div id="error"></div>
+
+    <p class="hint">↑↓←→ move &nbsp;·&nbsp; Z = A &nbsp;·&nbsp; X = B &nbsp;·&nbsp; or use the on-screen buttons</p>
+  </div>
+
+  <!-- ── Cart panel ── -->
+  <div class="cart-panel" id="cart-panel">
+    <div class="panel-header">
+      <span class="section-label">Carts</span>
+      <button id="add-cart">+ Add cart</button>
+    </div>
+    <div id="pending-notice">
+      <span id="pending-count"></span> added — reboot to make available to carts
+    </div>
+    <div id="cart-list"></div>
+    <input type="file" id="file-input" accept=".bdb,.bdcart" multiple />
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
