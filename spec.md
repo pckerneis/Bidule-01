@@ -701,7 +701,7 @@ Example: `input & 1` tests Left; `input & 16` tests A. `btn()` and `btnp()` rema
 
 `audio(t)` is called by the audio subsystem running on **core 1**, 8000 times per second (8 kHz sample rate).
 
-- `t` is the **absolute sample index** since boot, as a 32-bit integer. Wraps at 2³²−1 (~53 hours of audio).
+- `t` is the **absolute sample index** since the start of the current cart (reset to 0 after `init()` completes, including on cart switch), as a 32-bit signed integer. Wraps from 2³¹−1 back to −2³¹ (~74.6 hours of audio at 8 kHz).
 - The return value of `audio(t)` a the output sample interpreted as an **unsigned 8-bit integer in the range [0, 255]**. Only the least significant 8 bits are used; higher bits are discarded.
 - `audio(t)` may call math utility functions (`abs`, `min`, `max`, etc.) but may not call any graphics, input, or persistence built-ins.
 - `audio(t)` must not write to any global variable. This constraint is enforced at compile time.
@@ -724,7 +724,21 @@ Example: `input & 1` tests Left; `input & 16` tests A. `btn()` and `btnp()` rema
 
 **Audio overrun:** Core 1 uses a busy-wait loop that outputs one sample then spins until 45 µs have elapsed. If `audio(t)` itself takes longer than 45 µs, the busy-wait period shrinks to zero and the next sample starts immediately. No silence is inserted, no error is raised; the effective sample rate degrades proportionally to the overrun.
  
-### 5.4 Error Handling
+### 5.4 Cart Switching
+
+A cart may call `loadcart(i)` at any point during `update()` to request a switch to another cart. The switch takes effect at the end of the current frame, after `draw()` and the display flush complete. The sequence is:
+
+1. The current cart's execution stops (remaining `update()` body is aborted).
+2. The new cart binary is loaded and validated. If validation fails, the current cart continues running unchanged; `loadcart()` returns `0`.
+3. The global variable table is re-initialised (all variables reset to `0`).
+4. `init()` is called for the new cart, if defined.
+5. The `t` counter is reset to `0`.
+6. The `frame` counter is reset to `0`.
+7. The main loop continues with the new cart.
+
+**Audio during switch:** The audio callback continues running on core 1 throughout the switch. The shadow copy last written by the departing cart remains active until the first `draw()` of the new cart completes and a new shadow is committed. Cart authors should not rely on audio output being correct during this brief transition window.
+
+### 5.5 Error Handling
 
 **Load-time error** (binary fails validation): display an error message and halt. The cart is not executed.
 
@@ -736,19 +750,19 @@ Example: `input & 1` tests Left; `input & 16` tests A. `btn()` and `btnp()` rema
 
 **Emulator divergence**: emulators may display error details (source line, opcode, stack trace) that the firmware cannot. The halting/silence contract must match.
 
-### 5.5 Display
+### 5.6 Display
 
 - Resolution: **128 × 64 pixels**, 1-bit colour (monochrome).
 - The framebuffer is written during `draw()` and flushed to the screen after `draw()` returns.
 - Graphics calls (`pset`, `rectfill`, etc.) are permitted outside of `draw()` (e.g. inside `update()`). They write to the framebuffer immediately but the result will not be visible until the next flush.
 
-### 5.6 Emulator Notes
+### 5.7 Emulator Notes
 
 A web or desktop emulator implements the same cart/runtime contract without the RP2040-specific subsystems. The following platform substitutions apply.
 
 **Persistence:** Use `localStorage` keyed by `bidule01:<cartId>` where `<cartId>` is the cart's `@id` field. Each entry stores the four save-slot integers as a JSON array. An absent entry is equivalent to a never-written save block (`load()` returns `0`).
 
-**Audio:** Implement `audio(t)` via the Web Audio API `AudioWorklet`. The worklet requests samples at the context sample rate and calls `audio(t)` once per sample, clamping the return value to [0, 255] and mapping it to a float in [−1, 1] for output. If `audio(t)` throws, output `0.0` (silence) for that sample and continue. The worklet maintains its own `t` counter independent of the main thread.
+**Audio:** Implement `audio(t)` via the Web Audio API `AudioWorklet`. The worklet requests samples at the context sample rate and calls `audio(t)` once per sample, taking the low 8 bits of the return value and mapping it to a float in [−1, 1] for output. If `audio(t)` throws, output `0.0` (silence) for that sample and continue. The worklet maintains its own `t` counter independent of the main thread.
 
 **Cart filesystem:** The emulator maintains a virtual cart list in memory, populated by an in-page file picker (`<input type="file" accept=".bdb">`). The virtual list persists for the browser session. `cartcount()` returns the number of loaded carts; `cartmeta()` reads from the binary metadata block of the cart at the given index; `loadcart()` switches the active cart. The UI must also provide a way to remove individual carts from the list.
 
