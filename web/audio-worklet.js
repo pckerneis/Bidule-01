@@ -6,9 +6,9 @@
 
 import { VM, MAX_VARS } from './vm.js';
 
-// The cart's audio callback runs at 22 050 Hz regardless of the AudioContext
+// The cart's audio callback runs at 8000 Hz regardless of the AudioContext
 // sample rate. We use a phase accumulator to advance `t` at exactly that rate.
-const CART_HZ = 22050;
+const CART_HZ = 8000;
 
 class BiduleAudioProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -19,9 +19,13 @@ class BiduleAudioProcessor extends AudioWorkletProcessor {
 
     this.port.onmessage = ({ data }) => {
       if (data.type === 'load') {
-        this._vm.load(data.binary);
-        this._t = 0;
-        this._phase = 0;
+        try {
+          this._vm.load(data.binary);
+          this._t = 0;
+          this._phase = 0;
+        } catch (e) {
+          console.error('AudioWorklet: failed to load cart:', e);
+        }
       } else if (data.type === 'globals') {
         // Apply the end-of-frame globals snapshot (shadow copy equivalent).
         // Only copy the integer globals; audio t-param will be overwritten by
@@ -35,6 +39,7 @@ class BiduleAudioProcessor extends AudioWorkletProcessor {
 
   process(_inputs, outputs) {
     const ch = outputs[0]?.[0];
+
     if (!ch) return true;
 
     if (!this._vm.loaded) {

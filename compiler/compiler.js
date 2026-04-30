@@ -145,7 +145,7 @@ function lex(src) {
                         (src[i] >= 'A' && src[i] <= 'Z') || (src[i] >= '0' && src[i] <= '9'))) {
         s += src[i++];
       }
-      const KWS = new Set(['if', 'else', 'while', 'for', 'break', 'continue']);
+      const KWS = new Set(['if', 'else', 'while', 'for', 'break', 'continue', 'return']);
       tokens.push({ type: KWS.has(s) ? 'KW' : 'IDENT', value: s, line });
       continue;
     }
@@ -312,6 +312,7 @@ class Parser {
         case 'for':      return this.parseFor();
         case 'break':    return this.parseBreak();
         case 'continue': return this.parseContinue();
+        case 'return':   return this.parseReturn();
         default:
           this.ctx.error(`line ${t.line}: unexpected keyword '${t.value}'`);
           this.advance();
@@ -571,6 +572,16 @@ class Parser {
     this.continuePatchLists[this.continuePatchLists.length - 1].push(this.e.emitJump(OP.JUMP));
   }
 
+  parseReturn() {
+    const t = this.eatKw('return');
+    if (!this.inAudio) {
+      this.ctx.error(`line ${t.line}: 'return' is only valid inside audio()`);
+      return;
+    }
+    this.parseExpr();
+    this.e.emit(OP.RET);
+  }
+
   // ── Expressions ──────────────────────────────────────────────────────────────
 
   parseArglist() {
@@ -721,6 +732,7 @@ function compileFunction(name, params, bodyTokens, ctx) {
   const paramSlots = params.map(pname => ctx.varSlot(pname, 0));
 
   p.parseBody();
+  if (name === 'audio') { e.emit(OP.PUSH_INT); e.emitI32(128); }
   e.emit(OP.RET);
 
   return { bytes: e.bytes, paramSlots };

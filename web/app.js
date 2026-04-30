@@ -18,12 +18,13 @@ const fb   = new Uint8Array(W * H);
 const btns = new Uint8Array(6);
 const prev = new Uint8Array(6);
 
-let carts     = [];   // all known carts (UI list, updated anytime)
-let bootCarts = [];   // snapshot visible to the running VM (frozen at last reboot)
-let cartIdx   = -1;   // index into carts[] of the currently highlighted cart
-let running   = false;
-let frame     = 0;
-let loopId    = null;
+let carts         = [];   // all known carts (UI list, updated anytime)
+let bootCarts     = [];   // snapshot visible to the running VM (frozen at last reboot)
+let cartIdx       = -1;   // index into carts[] of the currently highlighted cart
+let running       = false;
+let frame         = 0;
+let loopId        = null;
+let currentBinary = null; // last binary loaded, so audio can catch up after startAudio()
 
 // ─── VM ───────────────────────────────────────────────────────────────────────
 
@@ -62,6 +63,7 @@ async function startAudio() {
     await audioCtx.audioWorklet.addModule('./audio-worklet.js');
     audioNode = new AudioWorkletNode(audioCtx, 'bidule-audio');
     audioNode.connect(audioCtx.destination);
+    if (currentBinary) audioLoad(currentBinary);
   } catch (e) {
     console.warn('AudioWorklet unavailable:', e);
     audioCtx = audioNode = null;
@@ -119,6 +121,7 @@ function parseMeta(binary) {
 function loadAndRun(binary) {
   if (running) stopLoop();
   if (!vm.load(binary)) { showError('Invalid cart binary'); return false; }
+  currentBinary = binary;
   audioLoad(binary);
   frame = 0;
   try { vm.callInit(); } catch (e) { halt(e); return false; }
@@ -160,8 +163,10 @@ async function reboot() {
   cartIdx = -1;
   showError('');
 
-  // Re-scan server for new carts, then freeze the snapshot.
+  const noiseId = setInterval(showNoise, 1000 / 30);
   await autoLoadCarts();
+  clearInterval(noiseId);
+
   bootCarts = [...carts];
   renderCartList();
 
@@ -251,6 +256,11 @@ function tick() {
 
 const canvas = document.getElementById('screen');
 const ctx2d  = canvas.getContext('2d');
+
+function showNoise() {
+  for (let i = 0; i < fb.length; i++) fb[i] = Math.random() < 0.5 ? 1 : 0;
+  blit();
+}
 
 function blit() {
   const img = ctx2d.createImageData(W * SCALE, H * SCALE);

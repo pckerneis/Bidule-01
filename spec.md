@@ -31,7 +31,7 @@
 | **Firmware** | The software flashed to the Raspberry Pi Pico that implements the runtime |
 | **Emulator** | Any runtime implementation not running on the reference hardware |
 | **Frame** | One execution cycle of `update()` and `draw()`, targeting 30 per second |
-| **t** | The absolute audio sample index passed to `audio(t)`, incrementing at 22 050 Hz |
+| **t** | The absolute audio sample index passed to `audio(t)`, incrementing at 8000 Hz |
 
 ---
 
@@ -160,6 +160,8 @@ for (i = 0; i < 10; i++) {
 ```
 
 `break` exits the innermost loop immediately. `continue` skips to the next iteration. Both are only valid inside `while` or `for` blocks.
+
+`return <expr>` is only valid inside `audio(t)`. It evaluates the expression and immediately returns it as the sample value. Using `return` outside `audio(t)` is a **compile error**. Falling off the end of `audio(t)` without a `return` implicitly returns `128` (mid-point / silence).
 
 ### 2.8 Arrays
 
@@ -574,7 +576,7 @@ The VM is a **stack-based interpreter**. Instructions use variable-width encodin
 | `PEEK_JUMP_T` | `0x53` | `i16` | Peek (no pop); jump if nonzero — used for `\|\|` short-circuit |
 | `PEEK_JUMP_F` | `0x54` | `i16` | Peek (no pop); jump if zero — used for `&&` short-circuit |
 | `CALL` | `0x60` | `u8 id`, `u8 argc` | Call built-in `id`; args pushed left-to-right; pops `argc` args; pushes return value unless void |
-| `RET` | `0xFF` | — | Return from lifecycle function |
+| `RET` | `0xFF` | — | Return from lifecycle function. For `audio(t)`: pops the top of stack as the sample value. For all other functions: stack is empty at this point. |
 
 #### Index spaces
 
@@ -697,10 +699,10 @@ Example: `input & 1` tests Left; `input & 16` tests A. `btn()` and `btnp()` rema
 
 ### 5.3 Audio Callback
 
-`audio(t)` is called by the audio subsystem running on **core 1**, 22 050 times per second (22.05 kHz sample rate).
+`audio(t)` is called by the audio subsystem running on **core 1**, 8000 times per second (8 kHz sample rate).
 
 - `t` is the **absolute sample index** since boot, as a 32-bit integer. Wraps at 2³²−1 (~53 hours of audio).
-- The return value of `audio(t)` is the output sample as an **unsigned 8-bit integer in the range [0, 255]**. Values outside this range are clamped.
+- The return value of `audio(t)` a the output sample interpreted as an **unsigned 8-bit integer in the range [0, 255]**. Only the least significant 8 bits are used; higher bits are discarded.
 - `audio(t)` may call math utility functions (`abs`, `min`, `max`, etc.) but may not call any graphics, input, or persistence built-ins.
 - `audio(t)` must not write to any global variable. This constraint is enforced at compile time.
 
@@ -846,7 +848,7 @@ There is no traditional call stack in v1: the four lifecycle functions are direc
 
 ### 7.4 Audio Output
 
-- Sample rate: 22 050 Hz
+- Sample rate: 8000 Hz
 - Bit depth: 8-bit unsigned [0, 255]; 128 = silence (midpoint)
 - Output method: PWM with RC filter
 - PWM configuration: wrap = 255 (8-bit resolution), clkdiv = 1.0 → carrier ≈ 488 kHz

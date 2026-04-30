@@ -103,7 +103,7 @@ A cart defines up to four lifecycle functions:
 | `init()` | Once at start | Initialise state |
 | `update(frame, input)` | 30× per second | Game logic |
 | `draw(frame, input)` | 30× per second | Rendering |
-| `audio(t)` | 22 050× per second | Sound synthesis |
+| `audio(t)` | 8000× per second | Sound synthesis |
 
 All functions are optional. A cart that only defines `draw()` is valid.
 

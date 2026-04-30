@@ -68,14 +68,15 @@ export class VM {
     const r8  = () => bin[p++];
     const r16 = () => { const v = bin[p]|(bin[p+1]<<8); p+=2; return v; };
 
-    // Metadata block
+    // Metadata block — decoded as 7-bit ASCII (no TextDecoder; works in AudioWorklet too)
     const metaLen = r16();
     this.meta = {};
-    new TextDecoder().decode(bin.slice(p, p+metaLen))
-      .split('\n').forEach(l => {
-        const m = l.match(/^@(\S+)\s+(.*)/);
-        if (m) this.meta[m[1]] = m[2].trim();
-      });
+    let metaStr = '';
+    for (let i = 0; i < metaLen; i++) metaStr += String.fromCharCode(bin[p + i] & 0x7F);
+    metaStr.split('\n').forEach(l => {
+      const m = l.match(/^@(\S+)\s+(.*)/);
+      if (m) this.meta[m[1]] = m[2].trim();
+    });
     p += metaLen;
 
     // Array literal table

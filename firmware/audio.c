@@ -3,8 +3,8 @@
 #include "pico/multicore.h"
 #include "hardware/pwm.h"
 
-// 22050 Hz → ~45.35 µs per sample
-#define SAMPLE_PERIOD_US 45
+// 8000 Hz → 125 µs per sample
+#define SAMPLE_PERIOD_US 125
 
 static volatile int (*audio_cb)(int t) = NULL;
 
@@ -14,9 +14,7 @@ static void core1_entry(void) {
         uint32_t next = time_us_32() + SAMPLE_PERIOD_US;
 
         int (*cb)(int) = audio_cb;
-        int sample = cb ? cb((int)t) : 128;
-        if (sample < 0)   sample = 0;
-        if (sample > 255) sample = 255;
+        int sample = cb ? (cb((int)t) & 255) : 128;
         pwm_set_gpio_level(AUDIO_PIN, (uint16_t)sample);
         t++;
 

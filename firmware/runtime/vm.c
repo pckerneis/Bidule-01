@@ -514,7 +514,7 @@ void vm_call_draw(int frame, uint8_t input) {
     exec(vm.off_draw, vm.globals, vm.stack0);
 }
 
-// Called from core 1 at 22 050 Hz (§5.3).
+// Called from core 1 at 8000 Hz (§5.3).
 int vm_call_audio(int t) {
     if (!vm.loaded || vm.off_audio == 0xFFFF) return 128;
     uint8_t  active = vm.shadow_active;
