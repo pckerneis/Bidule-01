@@ -6,14 +6,14 @@
 #define SAMPLE_PERIOD_US (-125)  // 8000 Hz
 
 static volatile int (*audio_cb)(int t) = NULL;
-static uint32_t audio_t = 0;
+static int32_t audio_t = 0;
 static struct repeating_timer audio_timer;
 
 static bool timer_cb(struct repeating_timer *rt) {
     (void)rt;
     int (*cb)(int) = audio_cb;
-    uint32_t t = audio_t++;
-    int sample = cb ? cb((int)t) : 128;
+    int32_t t = audio_t++;
+    int sample = cb ? cb(t) : 128;
     sample = sample < 0 ? 0 : sample > 255 ? 255 : sample;
     pwm_set_gpio_level(AUDIO_PIN, (uint16_t)sample);
     return true;
