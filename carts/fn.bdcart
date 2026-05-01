@@ -1,0 +1,13 @@
+// @name fn test
+
+name = "foo"
+
+fn greet(n[]) {
+  print("hello", 1, 1, 1)
+  print(n, 80, 1, 1)
+}
+
+draw() {
+  cls(0)
+  greet(name)
+}

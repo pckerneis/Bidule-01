@@ -8,13 +8,17 @@
 //
 //   OP_PUSH_INT      [i32 LE]          push 32-bit integer constant
 //   OP_PUSH_ARR      [u8]              push literal array reference by table index
-//   OP_LOAD          [u8]              push global variable by slot (0–63)
-//   OP_STORE         [u8]              pop → global variable slot
+//   OP_LOAD          [u8]              push int global variable by slot (0–63)
+//   OP_STORE         [u8]              pop → global variable slot; T_LIT encoded as -(idx+1)
+//   OP_LOAD_ARR      [u8]              push arr_ref global; decodes: slot<0 → lit, ≥0 → mut
 //   OP_DUP                             duplicate top of stack
-//   OP_ARR_GET       [u8 slot]         pop index; push arr[slot][index] (0 if OOB)
-//   OP_ARR_SET       [u8 slot]         pop value (top), pop index; write (no-op if OOB)
-//   OP_ARR_LEN       [u8 slot]         push declared length of arr[slot]
+//   OP_ARR_GET       [u8 slot]         pop index; push pool[slot][index] (0 if OOB)
+//   OP_ARR_SET       [u8 slot]         pop value (top), pop index; write pool[slot] (no-op if OOB)
+//   OP_ARR_LEN       [u8 slot]         push declared length of pool[slot]
 //   OP_PUSH_ARR_MUT  [u8 slot]         push mutable array reference
+//   OP_DYN_ARR_GET   [u8 slot]         pop index; push element from arr_ref stored in var slot
+//   OP_DYN_ARR_SET   [u8 slot]         pop value (top), pop index; write to arr_ref in var slot
+//   OP_DYN_ARR_LEN   [u8 slot]         push length from arr_ref stored in var slot
 //   OP_JUMP          [i16 LE]          unconditional jump, offset relative to next instruction
 //   OP_JUMP_T        [i16 LE]          pop; jump if nonzero
 //   OP_JUMP_F        [i16 LE]          pop; jump if zero
@@ -23,15 +27,17 @@
 //   OP_CALL          [u8 id][u8 argc]  call built-in; pops argc args; pushes result if non-void
 //
 // Compound scalar assignments compile to LOAD + op + STORE.
-// Compound array assignments compile to DUP + ARR_GET + op + ARR_SET.
+// Compound pool-array assignments compile to DUP + ARR_GET + op + ARR_SET.
+// Compound arr_ref-variable assignments compile to DUP + DYN_ARR_GET + op + DYN_ARR_SET.
 
 typedef enum {
     // Literals
     OP_PUSH_INT      = 0x00,   // [i32]
     OP_PUSH_ARR      = 0x01,   // [u8]  — literal array ref
     // Variables
-    OP_LOAD          = 0x02,   // [u8]
-    OP_STORE         = 0x03,   // [u8]
+    OP_LOAD          = 0x02,   // [u8]  — push int global slot
+    OP_STORE         = 0x03,   // [u8]  — pop → global slot (T_LIT encoded as -(idx+1))
+    OP_LOAD_ARR      = 0x04,   // [u8]  — push arr_ref global; decodes: <0 → lit, ≥0 → mut
     // Arithmetic
     OP_ADD           = 0x10,
     OP_SUB           = 0x11,
@@ -68,10 +74,13 @@ typedef enum {
     // User-defined function call
     OP_CALL_FN       = 0x61,   // [u16 fn_idx LE][u8 argc]
     // Array operations
-    OP_ARR_GET       = 0x70,   // [u8 slot]
-    OP_ARR_SET       = 0x71,   // [u8 slot]
-    OP_ARR_LEN       = 0x72,   // [u8 slot]
-    OP_PUSH_ARR_MUT  = 0x73,   // [u8 slot]
+    OP_ARR_GET       = 0x70,   // [u8 slot]  pop index; push pool[slot][index]
+    OP_ARR_SET       = 0x71,   // [u8 slot]  pop value (top), pop index; write pool[slot]
+    OP_ARR_LEN       = 0x72,   // [u8 slot]  push declared length of pool[slot]
+    OP_PUSH_ARR_MUT  = 0x73,   // [u8 slot]  push mutable array reference
+    OP_DYN_ARR_GET   = 0x74,   // [u8 slot]  pop index; push element from arr_ref in var slot
+    OP_DYN_ARR_SET   = 0x75,   // [u8 slot]  pop value (top), pop index; write to arr_ref in var slot
+    OP_DYN_ARR_LEN   = 0x76,   // [u8 slot]  push length from arr_ref in var slot
     // Return from lifecycle function
     OP_RET           = 0xFF,
 } Opcode;

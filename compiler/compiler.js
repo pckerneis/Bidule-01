@@ -7,8 +7,9 @@
 const OP = {
   PUSH_INT:     0x00,
   PUSH_ARR:     0x01,   // [u8]  push literal array ref by table index
-  LOAD:         0x02,   // [u8]  push global variable by slot
-  STORE:        0x03,   // [u8]  pop → global variable slot
+  LOAD:         0x02,   // [u8]  push global int variable by slot
+  STORE:        0x03,   // [u8]  pop → global variable slot (encodes arr_ref as negative)
+  LOAD_ARR:     0x04,   // [u8]  push global arr_ref variable; decodes slot value to typed ref
   ADD:          0x10,  SUB:          0x11,  MUL:  0x12,
   DIV:          0x13,  MOD:          0x14,  NEG:  0x15,
   BAND:         0x20,  BOR:          0x21,  BXOR: 0x22,
@@ -22,10 +23,13 @@ const OP = {
   PEEK_JUMP_T:  0x53,  PEEK_JUMP_F:  0x54,
   CALL:         0x60,
   CALL_FN:      0x61,   // [u16 fn_idx LE][u8 argc]  call user-defined function
-  ARR_GET:      0x70,   // [u8 slot]  pop index; push arr[slot][index]   (0 if OOB)
+  ARR_GET:      0x70,   // [u8 slot]  pop index; push pool[slot][index]  (0 if OOB)
   ARR_SET:      0x71,   // [u8 slot]  pop value (top), pop index; write  (no-op if OOB)
-  ARR_LEN:      0x72,   // [u8 slot]  push declared length of arr[slot]
+  ARR_LEN:      0x72,   // [u8 slot]  push declared length of pool[slot]
   PUSH_ARR_MUT: 0x73,   // [u8 slot]  push mutable array reference
+  DYN_ARR_GET:  0x74,   // [u8 slot]  pop index; push element from arr_ref stored in var slot
+  DYN_ARR_SET:  0x75,   // [u8 slot]  pop value (top), pop index; write to arr_ref in var slot
+  DYN_ARR_LEN:  0x76,   // [u8 slot]  push length of arr_ref stored in var slot
   RET:          0xFF,
 };
 
@@ -200,7 +204,7 @@ class Emitter {
 
 class Ctx {
   constructor() {
-    this.vars        = new Map();  // name → slot (0–63), integer variables only
+    this.vars        = new Map();  // name → {slot, kind}  kind: null|'int'|'arr_ref'
     this.arrLiterals = [];         // unique string literals (deduped), max 32
     this.arrayDecls  = [];         // [{name, size}] in declaration order, max 16
     this.userFns     = new Map();  // name → { index, paramCount } in declaration order
@@ -226,9 +230,23 @@ class Ctx {
         this.errors.push(`line ${line}: variable limit reached (max 64)`);
         return 0;
       }
-      this.vars.set(name, this.vars.size);
+      this.vars.set(name, { slot: this.vars.size, kind: null });
     }
-    return this.vars.get(name);
+    return this.vars.get(name).slot;
+  }
+
+  varKind(name) {
+    return this.vars.get(name)?.kind ?? null;
+  }
+
+  setVarKind(name, kind, line) {
+    const v = this.vars.get(name);
+    if (!v || kind === null) return;
+    if (v.kind === null) {
+      v.kind = kind;
+    } else if (v.kind !== kind) {
+      this.errors.push(`line ${line}: cannot change value-kind of variable '${name}' (was '${v.kind}', reassigned as '${kind}')`);
+    }
   }
 
   arrLitIndex(s, line) {
@@ -357,8 +375,12 @@ class Parser {
     const ident = this.eatIdent();
     if (this.inAudio)
       this.ctx.error(`line ${ident.line}: assignments are not allowed inside audio()`);
-    const op   = this.advance();  // ++ or --
+    const op  = this.advance();  // ++ or --
+    const vk  = this.ctx.varKind(ident.value);
+    if (vk === 'arr_ref')
+      this.ctx.error(`line ${ident.line}: '${op.value}' cannot be used on arr_ref variable '${ident.value}'`);
     const slot = this.ctx.varSlot(ident.value, ident.line);
+    this.ctx.setVarKind(ident.value, 'int', ident.line);
     this.e.emit(OP.LOAD, slot);
     this.e.emit(OP.PUSH_INT); this.e.emitI32(1);
     this.e.emit(op.value === '++' ? OP.ADD : OP.SUB);
@@ -370,7 +392,11 @@ class Parser {
     const ident = this.eatIdent();
     if (this.inAudio)
       this.ctx.error(`line ${ident.line}: assignments are not allowed inside audio()`);
+    const vk  = this.ctx.varKind(ident.value);
+    if (vk === 'arr_ref')
+      this.ctx.error(`line ${ident.line}: '${op.value}' cannot be used on arr_ref variable '${ident.value}'`);
     const slot = this.ctx.varSlot(ident.value, ident.line);
+    this.ctx.setVarKind(ident.value, 'int', ident.line);
     this.e.emit(OP.LOAD, slot);
     this.e.emit(OP.PUSH_INT); this.e.emitI32(1);
     this.e.emit(op.value === '++' ? OP.ADD : OP.SUB);
@@ -382,15 +408,24 @@ class Parser {
     if (this.inAudio)
       this.ctx.error(`line ${ident.line}: assignments are not allowed inside audio()`);
 
-    const op   = this.advance();   // =  +=  -=  *=  /=
-    const slot = this.ctx.varSlot(ident.value, ident.line);
+    const opTok = this.advance();   // =  +=  -=  *=  /=
+    const vk    = this.ctx.varKind(ident.value);
+    const slot  = this.ctx.varSlot(ident.value, ident.line);
 
-    if (op.value === '=') {
-      this.parseExpr();
+    if (opTok.value === '=') {
+      const rk = this.parseExpr();
+      if (rk === 'int' || rk === 'arr_ref')
+        this.ctx.setVarKind(ident.value, rk, ident.line);
     } else {
+      // Compound assignment — only valid on int variables
+      if (vk === 'arr_ref')
+        this.ctx.error(`line ${opTok.line}: '${opTok.value}' cannot be used on arr_ref variable '${ident.value}'`);
+      this.ctx.setVarKind(ident.value, 'int', ident.line);
       this.e.emit(OP.LOAD, slot);
-      this.parseExpr();
-      switch (op.value) {
+      const rk = this.parseExpr();
+      if (rk === 'arr_ref')
+        this.ctx.error(`line ${opTok.line}: right-hand side of '${opTok.value}' must be an int`);
+      switch (opTok.value) {
         case '+=': this.e.emit(OP.ADD); break;
         case '-=': this.e.emit(OP.SUB); break;
         case '*=': this.e.emit(OP.MUL); break;
@@ -401,7 +436,7 @@ class Parser {
     this.e.emit(OP.STORE, slot);
   }
 
-  // arr[i] op= expr
+  // arr[i] op= expr  (pool declaration or arr_ref scalar variable)
   parseArrayAssign() {
     const ident = this.eatIdent();
     if (this.inAudio)
@@ -411,27 +446,59 @@ class Parser {
     this.parseExpr();   // push index onto stack
     this.eatOp(']');
 
-    const op   = this.advance();   // =  +=  -=  *=  /=
-    const slot = this.ctx.arrayIndex(ident.value);
-    if (slot === -1)
-      this.ctx.error(`line ${ident.line}: '${ident.value}' is not a declared array`);
+    const opTok = this.advance();   // =  +=  -=  *=  /=
 
-    if (op.value !== '=') {
-      // Compound: DUP the index so ARR_GET and ARR_SET each get a copy
-      this.e.emit(OP.DUP);
-      this.e.emit(OP.ARR_GET, slot & 0xFF);
-      this.parseExpr();
-      switch (op.value) {
+    const _compoundOp = () => {
+      switch (opTok.value) {
         case '+=': this.e.emit(OP.ADD); break;
         case '-=': this.e.emit(OP.SUB); break;
         case '*=': this.e.emit(OP.MUL); break;
         case '/=': this.e.emit(OP.DIV); break;
         case '%=': this.e.emit(OP.MOD); break;
       }
+    };
+
+    // Pool declaration?
+    const poolSlot = this.ctx.arrayIndex(ident.value);
+    if (poolSlot !== -1) {
+      if (opTok.value !== '=') {
+        this.e.emit(OP.DUP);
+        this.e.emit(OP.ARR_GET, poolSlot & 0xFF);
+        this.parseExpr();
+        _compoundOp();
+      } else {
+        this.parseExpr();
+      }
+      this.e.emit(OP.ARR_SET, poolSlot & 0xFF);
+      return;
+    }
+
+    // arr_ref scalar variable?
+    const vk = this.ctx.varKind(ident.value);
+    if (vk === 'int') {
+      this.ctx.error(`line ${ident.line}: '${ident.value}' is an int variable; cannot use array indexing`);
+      this.parseExpr();
+      this.e.emit(OP.POP); this.e.emit(OP.POP);  // discard rhs and index
+      return;
+    }
+    if (vk === null && !this.ctx.vars.has(ident.value)) {
+      this.ctx.error(`line ${ident.line}: '${ident.value}' is not a declared array or arr_ref variable`);
+      this.parseExpr();
+      this.e.emit(OP.POP); this.e.emit(OP.POP);
+      return;
+    }
+    // arr_ref or previously-seen variable — infer arr_ref
+    const slot = this.ctx.varSlot(ident.value, ident.line);
+    this.ctx.setVarKind(ident.value, 'arr_ref', ident.line);
+    if (opTok.value !== '=') {
+      this.e.emit(OP.DUP);
+      this.e.emit(OP.DYN_ARR_GET, slot & 0xFF);
+      this.parseExpr();
+      _compoundOp();
     } else {
       this.parseExpr();
     }
-    this.e.emit(OP.ARR_SET, slot & 0xFF);
+    this.e.emit(OP.DYN_ARR_SET, slot & 0xFF);
   }
 
   parseCallStmt() {
@@ -599,7 +666,9 @@ class Parser {
       this.ctx.error(`line ${t.line}: 'return' is only valid inside a user-defined function or audio()`);
       return;
     }
-    this.parseExpr();
+    const rk = this.parseExpr();
+    if (this.inUserFn && rk === 'arr_ref')
+      this.ctx.error(`line ${t.line}: user-defined functions cannot return arr_ref in v1`);
     this.e.emit(OP.RET);
   }
 
@@ -614,10 +683,10 @@ class Parser {
     return count;
   }
 
-  parseExpr()   { this.parseLogical(); }
+  parseExpr()   { return this.parseLogical(); }
 
   parseLogical() {
-    this.parseBitor();
+    let k = this.parseBitor();
     while (this.checkOp('&&') || this.checkOp('||')) {
       const isAnd = this.advance().value === '&&';
       const skipJump = this.e.emitJump(isAnd ? OP.PEEK_JUMP_F : OP.PEEK_JUMP_T);
@@ -625,53 +694,91 @@ class Parser {
       this.parseBitor();
       this.e.patch(skipJump);
       this.e.emit(OP.NOT, OP.NOT);
+      k = 'int';
     }
+    return k;
   }
 
-  parseBitor()  { this.parseBitxor(); while (this.checkOp('|'))  { this.advance(); this.parseBitxor(); this.e.emit(OP.BOR);  } }
-  parseBitxor() { this.parseBitand(); while (this.checkOp('^'))  { this.advance(); this.parseBitand(); this.e.emit(OP.BXOR); } }
-  parseBitand() { this.parseCompar(); while (this.checkOp('&'))  { this.advance(); this.parseCompar(); this.e.emit(OP.BAND); } }
+  parseBitor() {
+    let k = this.parseBitxor();
+    while (this.checkOp('|'))  { const t = this.advance(); const rk = this.parseBitxor(); this.e.emit(OP.BOR);  if (k==='arr_ref'||rk==='arr_ref') this.ctx.error(`line ${t.line}: '|' cannot be applied to arr_ref`); k='int'; }
+    return k;
+  }
+  parseBitxor() {
+    let k = this.parseBitand();
+    while (this.checkOp('^'))  { const t = this.advance(); const rk = this.parseBitand(); this.e.emit(OP.BXOR); if (k==='arr_ref'||rk==='arr_ref') this.ctx.error(`line ${t.line}: '^' cannot be applied to arr_ref`); k='int'; }
+    return k;
+  }
+  parseBitand() {
+    let k = this.parseCompar();
+    while (this.checkOp('&'))  { const t = this.advance(); const rk = this.parseCompar(); this.e.emit(OP.BAND); if (k==='arr_ref'||rk==='arr_ref') this.ctx.error(`line ${t.line}: '&' cannot be applied to arr_ref`); k='int'; }
+    return k;
+  }
 
   parseCompar() {
-    this.parseShift();
+    let k = this.parseShift();
     const OPS = { '==': OP.EQ, '!=': OP.NE, '<': OP.LT, '<=': OP.LE, '>': OP.GT, '>=': OP.GE };
     while (this.peek().type === 'OP' && OPS[this.peek().value] !== undefined) {
-      const op = this.advance().value;
-      this.parseShift();
-      this.e.emit(OPS[op]);
+      const opTok = this.advance();
+      const rk = this.parseShift();
+      // Ordered comparisons on arr_ref are invalid; == and != are reference identity (allowed)
+      if ((opTok.value === '<' || opTok.value === '<=' || opTok.value === '>' || opTok.value === '>=') &&
+          (k === 'arr_ref' || rk === 'arr_ref'))
+        this.ctx.error(`line ${opTok.line}: ordered comparison '${opTok.value}' cannot be applied to arr_ref`);
+      this.e.emit(OPS[opTok.value]);
+      k = 'int';
     }
+    return k;
   }
 
   parseShift() {
-    this.parseAdd();
+    let k = this.parseAdd();
     while (this.checkOp('>>') || this.checkOp('<<')) {
-      const op = this.advance().value;
-      this.parseAdd();
-      this.e.emit(op === '>>' ? OP.SHR : OP.SHL);
+      const opTok = this.advance();
+      const rk = this.parseAdd();
+      if (k === 'arr_ref' || rk === 'arr_ref')
+        this.ctx.error(`line ${opTok.line}: '${opTok.value}' cannot be applied to arr_ref`);
+      this.e.emit(opTok.value === '>>' ? OP.SHR : OP.SHL);
+      k = 'int';
     }
+    return k;
   }
 
   parseAdd() {
-    this.parseMul();
+    let k = this.parseMul();
     while (this.checkOp('+') || this.checkOp('-')) {
-      const op = this.advance().value;
-      this.parseMul();
-      this.e.emit(op === '+' ? OP.ADD : OP.SUB);
+      const opTok = this.advance();
+      const rk = this.parseMul();
+      if (k === 'arr_ref' || rk === 'arr_ref')
+        this.ctx.error(`line ${opTok.line}: '${opTok.value}' cannot be applied to arr_ref`);
+      this.e.emit(opTok.value === '+' ? OP.ADD : OP.SUB);
+      k = 'int';
     }
+    return k;
   }
 
   parseMul() {
-    this.parseUnary();
+    let k = this.parseUnary();
     while (this.checkOp('*') || this.checkOp('/') || this.checkOp('%')) {
-      const op = this.advance().value;
-      this.parseUnary();
-      this.e.emit(op === '*' ? OP.MUL : op === '/' ? OP.DIV : OP.MOD);
+      const opTok = this.advance();
+      const rk = this.parseUnary();
+      if (k === 'arr_ref' || rk === 'arr_ref')
+        this.ctx.error(`line ${opTok.line}: '${opTok.value}' cannot be applied to arr_ref`);
+      this.e.emit(opTok.value === '*' ? OP.MUL : opTok.value === '/' ? OP.DIV : OP.MOD);
+      k = 'int';
     }
+    return k;
   }
 
   parseUnary() {
-    if (this.checkOp('-')) { this.advance(); this.parseUnary(); this.e.emit(OP.NEG); }
-    else                    this.parsePrimary();
+    if (this.checkOp('-')) {
+      const opTok = this.advance();
+      const k = this.parseUnary();
+      if (k === 'arr_ref') this.ctx.error(`line ${opTok.line}: unary '-' cannot be applied to arr_ref`);
+      this.e.emit(OP.NEG);
+      return 'int';
+    }
+    return this.parsePrimary();
   }
 
   parsePrimary() {
@@ -681,76 +788,167 @@ class Parser {
       this.advance();
       this.e.emit(OP.PUSH_INT);
       this.e.emitI32(t.value);
-      return;
+      return 'int';
     }
 
-    // String literal → read-only literal array reference
+    // String literal → read-only literal arr_ref
     if (t.type === 'STR') {
       this.advance();
       this.e.emit(OP.PUSH_ARR, this.ctx.arrLitIndex(t.value, t.line));
-      return;
+      return 'arr_ref';
     }
 
     if (t.type === 'IDENT') {
       this.advance();
+
       if (this.checkOp('(')) {
-        // Built-in call in expression context
-        this.advance();   // '('
+        // Function call in expression context — always returns int in v1
+        this.advance();
         const argc = this.parseArglist();
         this.eatOp(')');
         this._emitCall(t, argc, /* inExpr */ true);
-      } else if (this.checkOp('[')) {
+        return 'int';
+      }
+
+      if (this.checkOp('[')) {
         // Array element read: arr[i]
-        this.advance();   // '['
-        const slot = this.ctx.arrayIndex(t.value);
-        if (slot === -1)
-          this.ctx.error(`line ${t.line}: '${t.value}' is not a declared array`);
+        this.advance();
+        const poolSlot = this.ctx.arrayIndex(t.value);
+        if (poolSlot !== -1) {
+          this.parseExpr();
+          this.eatOp(']');
+          this.e.emit(OP.ARR_GET, poolSlot & 0xFF);
+          return 'int';
+        }
+        const vk = this.ctx.varKind(t.value);
+        if (vk === 'int') {
+          this.ctx.error(`line ${t.line}: '${t.value}' is an int variable; cannot use array indexing`);
+          this.parseExpr(); this.eatOp(']');
+          this.e.emit(OP.POP); this.e.emit(OP.PUSH_INT); this.e.emitI32(0);
+          return 'int';
+        }
+        if (vk === null && !this.ctx.vars.has(t.value)) {
+          // Completely undeclared — same error as before
+          this.ctx.error(`line ${t.line}: '${t.value}' is not a declared array or arr_ref variable`);
+          this.parseExpr(); this.eatOp(']');
+          this.e.emit(OP.POP); this.e.emit(OP.PUSH_INT); this.e.emitI32(0);
+          return 'int';
+        }
+        // arr_ref or previously-seen variable — treat as arr_ref, infer kind
+        const slot = this.ctx.varSlot(t.value, t.line);
+        this.ctx.setVarKind(t.value, 'arr_ref', t.line);
         this.parseExpr();
         this.eatOp(']');
-        this.e.emit(OP.ARR_GET, slot & 0xFF);
-      } else if (this.checkOp('.')) {
+        this.e.emit(OP.DYN_ARR_GET, slot & 0xFF);
+        return 'int';
+      }
+
+      if (this.checkOp('.')) {
         // Property access — only .length is defined
-        this.advance();   // '.'
+        this.advance();
         const prop = this.eatIdent();
         if (prop.value !== 'length')
           this.ctx.error(`line ${prop.line}: unknown property '${prop.value}'`);
-        const slot = this.ctx.arrayIndex(t.value);
-        if (slot === -1)
-          this.ctx.error(`line ${t.line}: '${t.value}' is not a declared array`);
-        this.e.emit(OP.ARR_LEN, slot & 0xFF);
-      } else {
-        // Bare name: array reference or scalar variable
-        const arrSlot = this.ctx.arrayIndex(t.value);
-        if (arrSlot !== -1) {
-          this.e.emit(OP.PUSH_ARR_MUT, arrSlot & 0xFF);
-        } else {
-          this.e.emit(OP.LOAD, this.ctx.varSlot(t.value, t.line));
+        const poolSlot = this.ctx.arrayIndex(t.value);
+        if (poolSlot !== -1) {
+          this.e.emit(OP.ARR_LEN, poolSlot & 0xFF);
+          return 'int';
         }
+        const vk = this.ctx.varKind(t.value);
+        if (vk === 'int') {
+          this.ctx.error(`line ${t.line}: '${t.value}' is an int variable; '.length' requires arr_ref`);
+          this.e.emit(OP.PUSH_INT); this.e.emitI32(0);
+          return 'int';
+        }
+        if (vk === null && !this.ctx.vars.has(t.value)) {
+          this.ctx.error(`line ${t.line}: '${t.value}' is not a declared array or arr_ref variable`);
+          this.e.emit(OP.PUSH_INT); this.e.emitI32(0);
+          return 'int';
+        }
+        // arr_ref or previously-seen variable — infer arr_ref
+        const slot = this.ctx.varSlot(t.value, t.line);
+        this.ctx.setVarKind(t.value, 'arr_ref', t.line);
+        this.e.emit(OP.DYN_ARR_LEN, slot & 0xFF);
+        return 'int';
       }
-      return;
+
+      // Bare name: pool declaration or scalar variable
+      const poolSlot = this.ctx.arrayIndex(t.value);
+      if (poolSlot !== -1) {
+        this.e.emit(OP.PUSH_ARR_MUT, poolSlot & 0xFF);
+        return 'arr_ref';
+      }
+      const vk  = this.ctx.varKind(t.value);
+      const slot = this.ctx.varSlot(t.value, t.line);
+      if (vk === 'arr_ref') {
+        this.e.emit(OP.LOAD_ARR, slot);
+        return 'arr_ref';
+      }
+      this.e.emit(OP.LOAD, slot);
+      return vk ?? 'int';
     }
 
     if (t.type === 'OP' && t.value === '(') {
       this.advance();
-      this.parseExpr();
+      const k = this.parseExpr();
       this.eatOp(')');
-      return;
+      return k;
     }
 
     this.ctx.error(`line ${t.line}: unexpected '${t.value}' in expression`);
     this.advance();
     this.e.emit(OP.PUSH_INT); this.e.emitI32(0);
+    return 'int';
   }
 }
 
 // ─── Function-level compilation ───────────────────────────────────────────────
 
-function compileFunction(name, params, bodyTokens, ctx, isUserFn = false) {
+// Pre-scan function body tokens to infer which parameters are arr_ref.
+// Heuristic: a parameter is arr_ref if it appears before '[' or '.' in the body,
+// or if it is directly assigned a string literal.
+// annotations[i] is 'arr_ref' if the parameter was explicitly typed; null otherwise.
+function inferParamKinds(params, bodyTokens, annotations) {
+  if (params.length === 0) return [];
+  const arrRef = new Set();
+  for (let i = 0; i < bodyTokens.length; i++) {
+    const t = bodyTokens[i];
+    if (t.type !== 'IDENT' || !params.includes(t.value)) continue;
+    const idx = params.indexOf(t.value);
+    if (annotations[idx] !== null) continue;  // skip explicitly annotated params
+    const next = bodyTokens[i + 1];
+    if (!next) continue;
+    if (next.type === 'OP' && (next.value === '[' || next.value === '.')) {
+      arrRef.add(t.value);
+    }
+    // param = "literal"
+    if (next.type === 'OP' && next.value === '=' &&
+        i + 2 < bodyTokens.length && bodyTokens[i + 2].type === 'STR') {
+      arrRef.add(t.value);
+    }
+  }
+  return params.map((p, i) => {
+    if (annotations[i] !== null) return annotations[i];
+    return arrRef.has(p) ? 'arr_ref' : 'int';
+  });
+}
+
+function compileFunction(name, params, bodyTokens, ctx, isUserFn = false, paramAnnotations = null) {
   const e   = new Emitter();
   const tks = [...bodyTokens, { type: 'EOF', value: 'EOF', line: 0 }];
   const p   = new Parser(tks, ctx, e, name === 'audio', isUserFn);
 
-  const paramSlots = params.map(pname => ctx.varSlot(pname, 0));
+  // Lifecycle params are always int; user-fn params use explicit annotations then inference.
+  const annotations = paramAnnotations || params.map(() => null);
+  const paramKinds = isUserFn
+    ? inferParamKinds(params, bodyTokens, annotations)
+    : params.map(() => 'int');
+
+  const paramSlots = params.map((pname, i) => {
+    const slot = ctx.varSlot(pname, 0);
+    ctx.setVarKind(pname, paramKinds[i], 0);
+    return slot;
+  });
 
   p.parseBody();
   if (name === 'audio') { e.emit(OP.PUSH_INT); e.emitI32(128); }
@@ -867,8 +1065,9 @@ export function compile(source) {
   // Lifecycle definition:      IDENT '(' params ')' block  (IDENT in LIFECYCLE)
   // User function definition:  'fn' IDENT '(' params ')' block
 
-  const fnDefs      = {};   // name → { params, bodyTokens, nameLine, isUserFn }
-  const userFnNames = [];   // user function names in declaration order
+  const fnDefs         = {};   // name → { params, bodyTokens, nameLine, isUserFn }
+  const userFnNames    = [];   // user function names in declaration order
+  const topLevelInits  = [];   // { name, kind, value, line } for IDENT = NUMBER|STRING
 
   while (pos < tokens.length && tokens[pos].type !== 'EOF') {
     const t = tokens[pos];
@@ -896,8 +1095,22 @@ export function compile(source) {
       }
       pos++;  // '('
       const params = [];
+      const paramAnnotations = [];
       while (tokens[pos]?.type === 'IDENT') {
-        params.push(tokens[pos++].value);
+        const paramTok = tokens[pos++];
+        params.push(paramTok.value);
+        if (tokens[pos]?.type === 'OP' && tokens[pos].value === '[') {
+          const bracketTok = tokens[pos++];
+          if (tokens[pos]?.type === 'OP' && tokens[pos].value === ']') {
+            pos++;
+            paramAnnotations.push('arr_ref');
+          } else {
+            ctx.error(`line ${bracketTok.line}: expected ']' in type annotation for parameter '${paramTok.value}'`);
+            paramAnnotations.push(null);
+          }
+        } else {
+          paramAnnotations.push(null);
+        }
         if (tokens[pos]?.type === 'OP' && tokens[pos].value === ',') pos++;
       }
       if (tokens[pos]?.type !== 'OP' || tokens[pos].value !== ')') {
@@ -914,7 +1127,7 @@ export function compile(source) {
         if (v === '{') depth++; else if (v === '}' && --depth === 0) { pos++; break; }
         pos++;
       }
-      fnDefs[name] = { params, bodyTokens: tokens.slice(bodyStart, pos), nameLine, isUserFn: true };
+      fnDefs[name] = { params, paramAnnotations, bodyTokens: tokens.slice(bodyStart, pos), nameLine, isUserFn: true };
       userFnNames.push(name);
       continue;
     }
@@ -931,8 +1144,25 @@ export function compile(source) {
       continue;
     }
 
-    // Array declaration: IDENT '[' NUMBER ']'
+    // Global declarations: IDENT '[' NUMBER ']' | IDENT '=' NUMBER | IDENT '=' STRING
     const next = tokens[pos + 1];
+    if (next && next.type === 'OP' && next.value === '=') {
+      const rhs = tokens[pos + 2];
+      if (rhs && (rhs.type === 'NUM' || rhs.type === 'STR')) {
+        const nameTok = tokens[pos++];  // IDENT
+        pos++;                           // '='
+        const rhsTok  = tokens[pos++];  // NUMBER or STRING
+        topLevelInits.push({
+          name: nameTok.value,
+          kind: rhsTok.type === 'STR' ? 'arr_ref' : 'int',
+          value: rhsTok.value,
+          line: nameTok.line,
+        });
+        continue;
+      }
+    }
+
+    // Array declaration: IDENT '[' NUMBER ']'
     if (next && next.type === 'OP' && next.value === '[') {
       const nameTok = tokens[pos++];  // IDENT
       pos++;                           // '['
@@ -1008,6 +1238,12 @@ export function compile(source) {
     ctx.declareUserFn(name, fnDefs[name].params.length, fnDefs[name].nameLine);
   }
 
+  // Register top-level init variable kinds so function bodies see them correctly
+  for (const { name, kind, line } of topLevelInits) {
+    ctx.varSlot(name, line);
+    ctx.setVarKind(name, kind, line);
+  }
+
   // ── Compile each function body ──────────────────────────────────────────────
   const compiled = {};
   for (const [name, { params, bodyTokens }] of Object.entries(fnDefs)) {
@@ -1019,7 +1255,27 @@ export function compile(source) {
   const compiledUserFns = [];
   for (const [name, fn] of ctx.userFns) {
     const def = fnDefs[name];
-    compiledUserFns.push({ name, ...compileFunction(name, def.params, def.bodyTokens, ctx, true) });
+    compiledUserFns.push({ name, ...compileFunction(name, def.params, def.bodyTokens, ctx, true, def.paramAnnotations) });
+  }
+
+  // Emit preamble for top-level initialisers and prepend to init()
+  const preambleE = new Emitter();
+  for (const { name, kind, value, line } of topLevelInits) {
+    const slot = ctx.varSlot(name, line);
+    if (kind === 'arr_ref') {
+      preambleE.emit(OP.PUSH_ARR, ctx.arrLitIndex(value, line));
+    } else {
+      preambleE.emit(OP.PUSH_INT); preambleE.emitI32(value);
+    }
+    preambleE.emit(OP.STORE, slot);
+  }
+  if (preambleE.bytes.length > 0) {
+    if (compiled.init) {
+      compiled.init.bytes = [...preambleE.bytes, ...compiled.init.bytes];
+    } else {
+      preambleE.emit(OP.RET);
+      compiled.init = { bytes: preambleE.bytes, paramSlots: [] };
+    }
   }
 
   if (ctx.errors.length > 0) {

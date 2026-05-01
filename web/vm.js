@@ -10,7 +10,7 @@ export const MAX_ARR_ELEMS = 256;
 // ─── Opcodes ──────────────────────────────────────────────────────────────────
 
 const OP = {
-  PUSH_INT:0x00, PUSH_ARR:0x01, LOAD:0x02, STORE:0x03,
+  PUSH_INT:0x00, PUSH_ARR:0x01, LOAD:0x02, STORE:0x03, LOAD_ARR:0x04,
   ADD:0x10, SUB:0x11, MUL:0x12, DIV:0x13, MOD:0x14, NEG:0x15,
   BAND:0x20, BOR:0x21, BXOR:0x22, SHL:0x23, SHR:0x24,
   EQ:0x30, NE:0x31, LT:0x32, LE:0x33, GT:0x34, GE:0x35, NOT:0x36,
@@ -18,6 +18,7 @@ const OP = {
   JUMP:0x50, JUMP_T:0x51, JUMP_F:0x52, PEEK_JUMP_T:0x53, PEEK_JUMP_F:0x54,
   CALL:0x60, CALL_FN:0x61,
   ARR_GET:0x70, ARR_SET:0x71, ARR_LEN:0x72, PUSH_ARR_MUT:0x73,
+  DYN_ARR_GET:0x74, DYN_ARR_SET:0x75, DYN_ARR_LEN:0x76,
   RET:0xFF,
 };
 
@@ -234,7 +235,18 @@ export class VM {
 
       // ── Variables ─────────────────────────────────────────────────────────────
       case OP.LOAD:  { const s=R8(); PI(s<MAX_VARS ? G[s] : 0); break; }
-      case OP.STORE: { const s=R8(); const {v}=PO(); if(s<MAX_VARS) G[s]=v|0; break; }
+      case OP.STORE: {
+        const s=R8(); const {t,v}=PO();
+        // arr_ref encoding: T_LIT stored as -(litidx+1) (negative), T_MUT as mutidx (non-negative)
+        if(s<MAX_VARS) G[s] = (t===T_LIT) ? -(v+1) : v|0;
+        break;
+      }
+      case OP.LOAD_ARR: {
+        // Decode arr_ref from global slot: negative → T_LIT, non-negative → T_MUT
+        const s=R8(); const enc=s<MAX_VARS ? G[s] : 0;
+        if(enc<0) PA(T_LIT, -(enc+1)); else PA(T_MUT, enc);
+        break;
+      }
 
       // ── Arithmetic ────────────────────────────────────────────────────────────
       case OP.ADD: { const {v:b}=PO(), {v:a}=PO(); PI(a+b);                       break; }
@@ -290,6 +302,30 @@ export class VM {
         break;
       }
 
+      // Dynamic arr_ref variable ops — operand is a scalar var slot, not a pool index.
+      // Encoding: G[slot] < 0 → T_LIT index -(G[slot]+1), ≥ 0 → T_MUT index G[slot].
+      case OP.DYN_ARR_GET: {
+        const s=R8(), idx=PO().v;
+        const enc=s<MAX_VARS ? G[s] : 0;
+        if(enc<0) { const l=this._lits[-(enc+1)]; PI(l&&idx>=0&&idx<l.length ? l[idx] : 0); }
+        else      { const a=this._pool[enc];       PI(a&&idx>=0&&idx<a.length ? a[idx] : 0); }
+        break;
+      }
+      case OP.DYN_ARR_SET: {
+        const s=R8(), val=PO().v|0, idx=PO().v;
+        const enc=s<MAX_VARS ? G[s] : 0;
+        if(enc>=0) { const a=this._pool[enc]; if(a&&idx>=0&&idx<a.length) a[idx]=val; }
+        // read-only literal: silent no-op
+        break;
+      }
+      case OP.DYN_ARR_LEN: {
+        const s=R8();
+        const enc=s<MAX_VARS ? G[s] : 0;
+        if(enc<0) { const l=this._lits[-(enc+1)]; PI(l ? l.length : 0); }
+        else      { PI(this._poolSz[enc] ?? 0); }
+        break;
+      }
+
       // ── Built-in call ─────────────────────────────────────────────────────────
       case OP.CALL: {
         const id=R8(), argc=R8();
@@ -311,7 +347,10 @@ export class VM {
         for (let i=argc-1; i>=0; i--) args[i]=PO();
         for (let i=0; i<fn.paramSlots.length; i++) {
           const slot = fn.paramSlots[i];
-          if (slot < MAX_VARS) G[slot] = args[i] ? (args[i].v|0) : 0;
+          if (slot < MAX_VARS && args[i]) {
+            const {t, v} = args[i];
+            G[slot] = (t===T_LIT) ? -(v+1) : v|0;
+          }
         }
         cframes.push(ip);
         ip = fn.entry;

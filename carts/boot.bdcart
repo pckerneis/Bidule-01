@@ -3,17 +3,9 @@
 // @id bidule_splash_pckerneis_1
 
 idbuf[16]
-arr[8]
 
 init() {
-    arr[0] = 'b'
-    arr[1] = 'i'
-    arr[2] = 'd'
-    arr[3] = 'u'
-    arr[4] = 'l'
-    arr[5] = 'e'
-    arr[6] = '0'
-    arr[7] = '1'
+  arr = "bidule01"
 }
 
 draw(frame) {

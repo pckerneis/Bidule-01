@@ -50,11 +50,14 @@ Key properties:
 ### 2.2 Grammar
 
 ```
-program    := top_level*
-top_level  := array_decl | udf_def
-udf_def    := 'fn' IDENT '(' param_list ')' block
-param_list := (IDENT (',' IDENT)*)?
-array_decl := IDENT '[' NUMBER ']'
+program     := top_level*
+top_level   := global_decl | udf_def
+udf_def     := 'fn' IDENT '(' param_list ')' block
+param_list  := (typed_param (',' typed_param)*)?
+typed_param := IDENT ('[' ']')?
+global_decl := IDENT '[' NUMBER ']'
+             | IDENT '=' NUMBER
+             | IDENT '=' STRING
 
 statement    := assignment | array_assign | incr_stmt | if_stmt | while_stmt | for_stmt | break_stmt | continue_stmt | call_stmt
 assignment   := IDENT ('=' | '+=' | '-=' | '*=' | '/=' | '%=') expr
@@ -130,11 +133,12 @@ From highest to lowest:
 ### 2.6 Variables
 
 - All variables are global.
-- A variable is created on its first assignment.
+- A variable is created on its first assignment or at its top-level declaration.
 - Its **value kind** (`int` or `arr_ref`) is inferred from the right‑hand side:
-  - `foo = 42` creates an `int` variable.
-  - `foo = "hello"` creates an `arr_ref` variable referencing the interned `"hello"` literal array.
+  - `foo = 42` (top-level or inside a function) creates an `int` variable.
+  - `foo = "hello"` (top-level or inside a function) creates an `arr_ref` variable referencing the interned `"hello"` literal array.
   - `foo[16]` at top level creates an `arr_ref` variable referencing the mutable array of size 16.
+- Top-level declarations of the form `IDENT '=' NUMBER` or `IDENT '=' STRING` are guaranteed to execute before any lifecycle function, including `init()`.
 
 - Once a variable’s kind is established, it cannot change. Mixed re‑declarations, such as:
 
@@ -193,15 +197,21 @@ Arrays are globally declared, fixed‑size sequences of integers. A global array
 
 ### Declaration
 
-A global array is declared by naming it with a size at the top level of the program (not inside a block):
+Global declarations appear at the top level of the program (not inside a block). Three forms are supported:
 
 ```c
-buf[32]
+buf[32]           // mutable array of 32 integers
+greeting = “hi”   // arr_ref variable bound to a string literal
+lives = 3         // int variable initialised to 3
 ```
 
-`buf[32]` declares a mutable array of 32 integers and creates an `arr_ref` variable named `buf`. All elements are initialised to `0` at cart load time. A name may only be declared once. A declaration that is later assigned an integer value, or vice versa, is a **compile‑time error** (“cannot change value‑kind of variable”).
+`buf[32]` declares a mutable array of 32 integers and creates an `arr_ref` variable named `buf`. All elements are initialised to `0` at cart load time.
 
-`foo = “hello”` binds `foo` to a read-only array reference pointing to the interned `”hello”` literal.
+`greeting = “hi”` declares an `arr_ref` variable bound to the interned `”hi”` literal array. The binding is established before any lifecycle function runs.
+
+`lives = 3` declares an `int` variable initialised to `3` before any lifecycle function runs. This is equivalent to assigning `lives = 3` at the top of `init()`, but is guaranteed to execute first.
+
+A name may only be declared once. A declaration that is later assigned a value of a different kind, or vice versa, is a **compile‑time error** (“cannot change value‑kind of variable”).
 
 Fixed limits (max array count, max size per array, total element pool) are defined in §6.3.
 
@@ -280,8 +290,11 @@ The language supports `fn` functions for code reuse. The syntax is:
 fn ident('(' param_list ')') block
 ```
 
-- `param_list` is `(IDENT (',' IDENT)*)?`.
-- Parameters are compile-time bound to variable slots; each parameter has a fixed value kind inferred from its usage or declaration context.
+- `param_list` is `(typed_param (',' typed_param)*)?` where `typed_param` is `IDENT ('[' ']')?`.
+- A parameter followed by `[]` is explicitly typed as `arr_ref`: `fn greet(name[])` declares `name` as an `arr_ref` parameter.
+- A parameter without `[]` has its kind inferred from usage in the body: if it appears before `[` or `.` (or is assigned a string literal), it is `arr_ref`; otherwise it is `int`.
+- Explicit annotation and inference may be mixed within the same parameter list.
+- Parameters are compile-time bound to variable slots; a parameter's kind cannot change after it is established.
 - A function may accept both `arr_ref` and `int` parameters. The compiler rejects calls where an argument kind does not match the parameter kind.
 - `fn`‑functions return an `int` via `return <expr>`; falling off the end implicitly returns `0`. Returning an `arr_ref` from a user-defined function is not supported in v1.
 - `fn`‑functions may call built‑in functions and other `fn`‑functions.
@@ -607,8 +620,9 @@ The VM is a **stack-based interpreter**. Instructions use variable-width encodin
 |---|---|---|---|
 | `PUSH_INT` | `0x00` | `i32` | Push 32-bit integer constant |
 | `PUSH_ARR` | `0x01` | `u8 litidx` | Push read-only literal array reference; `litidx` indexes the array literal table |
-| `LOAD` | `0x02` | `u8 varidx` | Push scalar global variable; `varidx` is a **scalar slot** (0–63) |
-| `STORE` | `0x03` | `u8 varidx` | Pop → scalar global variable; `varidx` is a **scalar slot** (0–63) |
+| `LOAD` | `0x02` | `u8 varidx` | Push int global variable; `varidx` is a **scalar slot** (0–63) |
+| `STORE` | `0x03` | `u8 varidx` | Pop → global variable slot. `T_LIT` values are encoded as `-(litidx+1)` (negative); `T_MUT` as `mutidx` (non-negative); int values as-is. |
+| `LOAD_ARR` | `0x04` | `u8 varidx` | Push arr_ref from global slot: negative stored value → `T_LIT` ref; non-negative → `T_MUT` ref. |
 | `ADD` | `0x10` | — | Pop b, pop a; push `a + b` |
 | `SUB` | `0x11` | — | Push `a - b` |
 | `MUL` | `0x12` | — | Push `a * b` |
@@ -633,6 +647,9 @@ The VM is a **stack-based interpreter**. Instructions use variable-width encodin
 | `ARR_SET` | `0x71` | `u8 arridx` | Pop value (top), pop index (next); write value into mutable array `arridx` at that index. No-op if out of bounds. |
 | `ARR_LEN` | `0x72` | `u8 arridx` | Push the declared element count of mutable array `arridx`. |
 | `PUSH_ARR_MUT` | `0x73` | `u8 arridx` | Push a mutable array reference; `arridx` indexes the array pool |
+| `DYN_ARR_GET` | `0x74` | `u8 varidx` | Pop index; load arr_ref from global slot `varidx` (using `LOAD_ARR` encoding); push element (0 if OOB) |
+| `DYN_ARR_SET` | `0x75` | `u8 varidx` | Pop value (top), pop index; load arr_ref from global slot `varidx`; write element. No-op if OOB or literal. |
+| `DYN_ARR_LEN` | `0x76` | `u8 varidx` | Load arr_ref from global slot `varidx`; push its declared length |
 | `JUMP` | `0x50` | `i16` | Unconditional relative jump |
 | `JUMP_T` | `0x51` | `i16` | Pop; jump if nonzero |
 | `JUMP_F` | `0x52` | `i16` | Pop; jump if zero |
@@ -647,7 +664,7 @@ The `u8` operands in the opcode set refer to **three distinct index spaces**, ea
 
 | Index space | Range | Used by | Resolves to |
 |---|---|---|---|
-| **Scalar variable slots** | `0`–`63` | `LOAD`, `STORE`, parameter slots in binary header | Entry in the global variable table |
+| **Scalar variable slots** | `0`–`63` | `LOAD`, `STORE`, `LOAD_ARR`, `DYN_ARR_GET`, `DYN_ARR_SET`, `DYN_ARR_LEN`, parameter slots in binary header | Entry in the global variable table |
 | **Array pool indices** | `0`–`ndecl−1` | `ARR_GET`, `ARR_SET`, `ARR_LEN`, `PUSH_ARR_MUT` | Entry in the mutable array pool (§6.3) |
 | **Array literal indices** | `0`–`nlit−1` | `PUSH_ARR` | Entry in the read-only literal table (§6.3) |
 
@@ -659,7 +676,7 @@ Compound assignments (`+=`, `-=`, `*=`, `/=`, `%=`) on scalar variables compile 
 
 `++` and `--` (both prefix and postfix forms) compile identically to `LOAD slot` + `PUSH_INT 1` + `ADD`/`SUB` + `STORE slot`.
 
-Compound assignments on array elements (`arr[i] += v`) compile to:
+Compound assignments on **pool-declared** array elements (`arr[i] += v`) compile to:
 ```
 <eval i>
 DUP
@@ -668,7 +685,18 @@ ARR_GET slot
 <arithmetic opcode>
 ARR_SET slot
 ```
-`DUP` keeps the index on the stack so it is available for both the `ARR_GET` (read) and `ARR_SET` (write).
+
+Compound assignments on **arr_ref scalar variable** elements (`foo[i] += v`, where `foo` is an `arr_ref` variable) compile to:
+```
+<eval i>
+DUP
+DYN_ARR_GET varslot
+<eval v>
+<arithmetic opcode>
+DYN_ARR_SET varslot
+```
+
+`DUP` keeps the index on the stack so it is available for both the read and write operations.
 
 #### Short-circuit compilation
 
