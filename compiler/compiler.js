@@ -21,6 +21,7 @@ const OP = {
   JUMP:         0x50,  JUMP_T:       0x51,  JUMP_F:       0x52,
   PEEK_JUMP_T:  0x53,  PEEK_JUMP_F:  0x54,
   CALL:         0x60,
+  CALL_FN:      0x61,   // [u16 fn_idx LE][u8 argc]  call user-defined function
   ARR_GET:      0x70,   // [u8 slot]  pop index; push arr[slot][index]   (0 if OOB)
   ARR_SET:      0x71,   // [u8 slot]  pop value (top), pop index; write  (no-op if OOB)
   ARR_LEN:      0x72,   // [u8 slot]  push declared length of arr[slot]
@@ -202,8 +203,17 @@ class Ctx {
     this.vars        = new Map();  // name → slot (0–63), integer variables only
     this.arrLiterals = [];         // unique string literals (deduped), max 32
     this.arrayDecls  = [];         // [{name, size}] in declaration order, max 16
+    this.userFns     = new Map();  // name → { index, paramCount } in declaration order
     this.errors      = [];
     this.warnings    = [];
+  }
+
+  declareUserFn(name, paramCount, line) {
+    if (this.userFns.has(name)) {
+      this.errors.push(`line ${line}: '${name}' defined more than once`);
+      return;
+    }
+    this.userFns.set(name, { index: this.userFns.size, paramCount });
   }
 
   varSlot(name, line) {
@@ -261,12 +271,13 @@ class Ctx {
 // ─── Parser / code generator ──────────────────────────────────────────────────
 
 class Parser {
-  constructor(tokens, ctx, emitter, inAudio) {
-    this.tok      = tokens;
-    this.pos      = 0;
-    this.ctx      = ctx;
-    this.e        = emitter;
-    this.inAudio  = inAudio;
+  constructor(tokens, ctx, emitter, inAudio, inUserFn = false) {
+    this.tok       = tokens;
+    this.pos       = 0;
+    this.ctx       = ctx;
+    this.e         = emitter;
+    this.inAudio   = inAudio;
+    this.inUserFn  = inUserFn;
     this.breakPatchLists    = [];
     this.continuePatchLists = [];
   }
@@ -433,26 +444,36 @@ class Parser {
 
   _emitCall(ident, argc, inExpr) {
     const b = BUILTINS[ident.value];
-    if (!b) {
-      this.ctx.error(`line ${ident.line}: unknown function '${ident.value}'`);
-      if (inExpr) { this.e.emit(OP.PUSH_INT); this.e.emitI32(0); }
+    if (b) {
+      if (argc !== b.argc)
+        this.ctx.error(`line ${ident.line}: '${ident.value}' expects ${b.argc} arg(s), got ${argc}`);
+      if (this.inAudio && !b.audioOk)
+        this.ctx.error(`line ${ident.line}: '${ident.value}' cannot be called inside audio()`);
+
+      this.e.emit(OP.CALL, b.id, argc);
+
+      if (inExpr) {
+        if (!b.returns) {
+          this.ctx.warning(`line ${ident.line}: '${ident.value}' returns void, used in expression`);
+          this.e.emit(OP.PUSH_INT); this.e.emitI32(0);
+        }
+      } else {
+        if (b.returns) this.e.emit(OP.POP);
+      }
       return;
     }
-    if (argc !== b.argc)
-      this.ctx.error(`line ${ident.line}: '${ident.value}' expects ${b.argc} arg(s), got ${argc}`);
-    if (this.inAudio && !b.audioOk)
-      this.ctx.error(`line ${ident.line}: '${ident.value}' cannot be called inside audio()`);
 
-    this.e.emit(OP.CALL, b.id, argc);
-
-    if (inExpr) {
-      if (!b.returns) {
-        this.ctx.warning(`line ${ident.line}: '${ident.value}' returns void, used in expression`);
-        this.e.emit(OP.PUSH_INT); this.e.emitI32(0);
-      }
-    } else {
-      if (b.returns) this.e.emit(OP.POP);
+    const fn = this.ctx.userFns.get(ident.value);
+    if (fn) {
+      if (argc !== fn.paramCount)
+        this.ctx.error(`line ${ident.line}: '${ident.value}' expects ${fn.paramCount} arg(s), got ${argc}`);
+      this.e.emit(OP.CALL_FN, fn.index & 0xFF, (fn.index >> 8) & 0xFF, argc);
+      if (!inExpr) this.e.emit(OP.POP);
+      return;
     }
+
+    this.ctx.error(`line ${ident.line}: unknown function '${ident.value}'`);
+    if (inExpr) { this.e.emit(OP.PUSH_INT); this.e.emitI32(0); }
   }
 
   parseIf() {
@@ -574,8 +595,8 @@ class Parser {
 
   parseReturn() {
     const t = this.eatKw('return');
-    if (!this.inAudio) {
-      this.ctx.error(`line ${t.line}: 'return' is only valid inside audio()`);
+    if (!this.inAudio && !this.inUserFn) {
+      this.ctx.error(`line ${t.line}: 'return' is only valid inside a user-defined function or audio()`);
       return;
     }
     this.parseExpr();
@@ -724,15 +745,16 @@ class Parser {
 
 // ─── Function-level compilation ───────────────────────────────────────────────
 
-function compileFunction(name, params, bodyTokens, ctx) {
+function compileFunction(name, params, bodyTokens, ctx, isUserFn = false) {
   const e   = new Emitter();
   const tks = [...bodyTokens, { type: 'EOF', value: 'EOF', line: 0 }];
-  const p   = new Parser(tks, ctx, e, name === 'audio');
+  const p   = new Parser(tks, ctx, e, name === 'audio', isUserFn);
 
   const paramSlots = params.map(pname => ctx.varSlot(pname, 0));
 
   p.parseBody();
   if (name === 'audio') { e.emit(OP.PUSH_INT); e.emitI32(128); }
+  if (isUserFn)         { e.emit(OP.PUSH_INT); e.emitI32(0); }
   e.emit(OP.RET);
 
   return { bytes: e.bytes, paramSlots };
@@ -742,7 +764,7 @@ function compileFunction(name, params, bodyTokens, ctx) {
 
 function u16le(n) { return [n & 0xFF, (n >> 8) & 0xFF]; }
 
-function assembleBinary(meta, ctx, compiled) {
+function assembleBinary(meta, ctx, compiled, compiledUserFns) {
   const metaText  = Object.entries(meta).map(([k, v]) => `@${k} ${v}`).join('\n');
   const metaBytes = Array.from(metaText, c => c.charCodeAt(0) & 0x7F);
 
@@ -779,6 +801,23 @@ function assembleBinary(meta, ctx, compiled) {
     else if (name === 'audio')  { params.audio.t      = s[0] ?? 0xFF; }
   }
 
+  // User function bodies
+  const userFnMeta = [];
+  for (const fn of compiledUserFns) {
+    const entry = code.length;
+    code.push(...fn.bytes);
+    userFnMeta.push({ name: fn.name, params: fn.paramSlots.length, entry, paramSlots: fn.paramSlots });
+  }
+
+  // Function table at end of bytecode; fn_table_off is offset from bytecode start
+  const fn_table_off = code.length;
+  for (const fn of userFnMeta) {
+    const nameBytes = Array.from(fn.name, c => c.charCodeAt(0) & 0x7F);
+    code.push(nameBytes.length, ...nameBytes, fn.params, ...u16le(fn.entry), ...fn.paramSlots);
+  }
+
+  const fn_count = compiledUserFns.length;
+
   const out = [
     0x42, 0x44, 0x42, 0x4E,          // magic 'BDBN'
     1,                                 // format version
@@ -793,6 +832,8 @@ function assembleBinary(meta, ctx, compiled) {
     ...u16le(offsets.update), params.update.frame, params.update.input,
     ...u16le(offsets.draw),   params.draw.frame,   params.draw.input,
     ...u16le(offsets.audio),  params.audio.t,
+    ...u16le(fn_count),
+    ...u16le(fn_table_off),
     ...code,
   ];
 
@@ -821,17 +862,19 @@ export function compile(source) {
   }
   if (meta.id == null) ctx.warning('no @id metadata — persistence (save/load) will be disabled');
 
-  // ── Top-level: array declarations and lifecycle function definitions ─────────
-  // Array declaration:      IDENT '[' NUMBER ']'
-  // Lifecycle definition:   IDENT '(' params ')' block
+  // ── Top-level: array declarations, lifecycle functions, user-defined functions
+  // Array declaration:         IDENT '[' NUMBER ']'
+  // Lifecycle definition:      IDENT '(' params ')' block  (IDENT in LIFECYCLE)
+  // User function definition:  IDENT '(' params ')' block  (IDENT not in LIFECYCLE)
 
-  const fnDefs = {};
+  const fnDefs      = {};   // name → { params, bodyTokens, nameLine, isUserFn }
+  const userFnNames = [];   // user function names in declaration order
 
   while (pos < tokens.length && tokens[pos].type !== 'EOF') {
     const t = tokens[pos];
 
     if (t.type !== 'IDENT') {
-      ctx.error(`line ${t.line}: expected array declaration or lifecycle function, got '${t.value}'`);
+      ctx.error(`line ${t.line}: expected array declaration or function definition, got '${t.value}'`);
       while (pos < tokens.length && !(tokens[pos].type === 'OP' && tokens[pos].value === '{')) pos++;
       let depth = 0;
       while (pos < tokens.length) {
@@ -863,22 +906,14 @@ export function compile(source) {
       continue;
     }
 
-    // Lifecycle function definition
-    if (!(t.value in LIFECYCLE)) {
-      ctx.error(`line ${t.line}: expected lifecycle function (init/update/draw/audio) or array declaration, got '${t.value}'`);
-      while (pos < tokens.length && !(tokens[pos].type === 'OP' && tokens[pos].value === '{')) pos++;
-      let depth = 0;
-      while (pos < tokens.length) {
-        const v = tokens[pos++].value;
-        if (v === '{') depth++;
-        else if (v === '}' && --depth === 0) break;
-      }
-      continue;
-    }
-
     const name     = t.value;
     const nameLine = t.line;
+    const isUserFn = !(name in LIFECYCLE);
     pos++;
+
+    if (name in BUILTINS) {
+      ctx.error(`line ${nameLine}: cannot redefine built-in function '${name}'`);
+    }
 
     if (tokens[pos]?.type !== 'OP' || tokens[pos].value !== '(') {
       ctx.error(`line ${nameLine}: expected '(' after '${name}'`); continue;
@@ -911,19 +946,33 @@ export function compile(source) {
       pos++;
     }
 
-    fnDefs[name] = { params, bodyTokens: tokens.slice(bodyStart, pos) };
+    fnDefs[name] = { params, bodyTokens: tokens.slice(bodyStart, pos), nameLine, isUserFn };
+    if (isUserFn) userFnNames.push(name);
+  }
+
+  // Register user functions before compiling any body (enables forward references)
+  for (const name of userFnNames) {
+    ctx.declareUserFn(name, fnDefs[name].params.length, fnDefs[name].nameLine);
   }
 
   // ── Compile each function body ──────────────────────────────────────────────
   const compiled = {};
   for (const [name, { params, bodyTokens }] of Object.entries(fnDefs)) {
-    compiled[name] = compileFunction(name, params, bodyTokens, ctx);
+    if (name in LIFECYCLE) {
+      compiled[name] = compileFunction(name, params, bodyTokens, ctx, false);
+    }
+  }
+
+  const compiledUserFns = [];
+  for (const [name, fn] of ctx.userFns) {
+    const def = fnDefs[name];
+    compiledUserFns.push({ name, ...compileFunction(name, def.params, def.bodyTokens, ctx, true) });
   }
 
   if (ctx.errors.length > 0) {
     return { binary: null, errors: ctx.errors, warnings: ctx.warnings };
   }
 
-  const binary = assembleBinary(meta, ctx, compiled);
+  const binary = assembleBinary(meta, ctx, compiled, compiledUserFns);
   return { binary, errors: [], warnings: ctx.warnings };
 }

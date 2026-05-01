@@ -12,7 +12,7 @@ const OP = {
   EQ: 0x30, NE: 0x31, LT: 0x32, LE: 0x33, GT: 0x34, GE: 0x35, NOT: 0x36,
   POP: 0x40, DUP: 0x41,
   JUMP: 0x50, JUMP_T: 0x51, JUMP_F: 0x52, PEEK_JUMP_T: 0x53, PEEK_JUMP_F: 0x54,
-  CALL: 0x60,
+  CALL: 0x60, CALL_FN: 0x61,
   ARR_GET: 0x70, ARR_SET: 0x71, ARR_LEN: 0x72, PUSH_ARR_MUT: 0x73,
   RET: 0xFF,
 };
@@ -47,6 +47,27 @@ function parseBinary(bin) {
   const drawInputSlot   = r8();
   const audioOff        = r16();
   const audioTSlot      = r8();
+  const fnCount         = r16();
+  const fnTableOff      = r16();
+
+  const bytecode = bin.slice(p);
+
+  // Parse function table from bytecode
+  const userFns = [];
+  if (fnCount > 0 && fnTableOff < bytecode.length) {
+    let tp = fnTableOff;
+    for (let i = 0; i < fnCount; i++) {
+      if (tp >= bytecode.length) break;
+      const nameLen = bytecode[tp++];
+      let name = '';
+      for (let j = 0; j < nameLen; j++) name += String.fromCharCode(bytecode[tp++]);
+      const params  = bytecode[tp++];
+      const entry   = bytecode[tp] | (bytecode[tp + 1] << 8); tp += 2;
+      const paramSlots = [];
+      for (let j = 0; j < params; j++) paramSlots.push(bytecode[tp++]);
+      userFns.push({ name, params, entry, paramSlots });
+    }
+  }
 
   return {
     magic, version, meta, arrLits, arrDecls,
@@ -56,7 +77,8 @@ function parseBinary(bin) {
       drawFrame: drawFrameSlot, drawInput: drawInputSlot,
       audioT: audioTSlot,
     },
-    bytecode: bin.slice(p),
+    fnCount, fnTableOff, userFns,
+    bytecode,
   };
 }
 
@@ -85,6 +107,11 @@ function disassemble(bytes) {
       case OP.CALL:
         operands = [bytes[ip++], bytes[ip++]];
         break;
+      case OP.CALL_FN: {
+        const lo = bytes[ip++], hi = bytes[ip++];
+        operands = [lo | (hi << 8), bytes[ip++]];
+        break;
+      }
       default: break;
     }
     instrs.push({ op, operands });
@@ -449,5 +476,108 @@ Deno.test('Lifecycle functions', async (t) => {
 
   await t.step('variable assignment inside audio() is a compile error', () => {
     ok(errorsOf('audio(t){ x = 1 }').length > 0);
+  });
+});
+
+Deno.test('User-defined functions', async (t) => {
+  await t.step('no user functions: fnCount is 0', () => {
+    eq(getBinary('draw(f){}').fnCount, 0);
+  });
+
+  await t.step('one user function: fnCount is 1', () => {
+    eq(getBinary('add(a, b) { return a + b }\ndraw(f){}').fnCount, 1);
+  });
+
+  await t.step('user function appears in userFns table with correct name', () => {
+    const b = getBinary('add(a, b) { return a + b }\ndraw(f){}');
+    eq(b.userFns.length, 1);
+    eq(b.userFns[0].name, 'add');
+  });
+
+  await t.step('user function param count is recorded in function table', () => {
+    const b = getBinary('add(a, b) { return a + b }\ndraw(f){}');
+    eq(b.userFns[0].params, 2);
+  });
+
+  await t.step('user function with no params has param count 0', () => {
+    const b = getBinary('noop() { x = 1 }\ndraw(f){}');
+    eq(b.userFns[0].params, 0);
+  });
+
+  await t.step('calling a user function as statement emits CALL_FN + POP', () => {
+    const instrs = opsOf('noop() { x = 1 }\ndraw(f){ noop() }');
+    ok(instrs.some(i => i.op === OP.CALL_FN));
+    ok(instrs.some(i => i.op === OP.POP));
+  });
+
+  await t.step('calling a user function in expression emits CALL_FN without POP before STORE', () => {
+    const instrs = opsOf('inc(n) { return n + 1 }\ndraw(f){ x = inc(3) }');
+    ok(instrs.some(i => i.op === OP.CALL_FN));
+    const callIdx = instrs.findIndex(i => i.op === OP.CALL_FN);
+    ok(instrs[callIdx + 1]?.op !== OP.POP);
+  });
+
+  await t.step('CALL_FN carries correct fn index (0 for first user function)', () => {
+    const instrs = opsOf('first() { x = 1 }\ndraw(f){ first() }');
+    const call = instrs.find(i => i.op === OP.CALL_FN);
+    eq(call?.operands[0], 0);
+  });
+
+  await t.step('second user function gets fn index 1', () => {
+    const instrs = opsOf('a() { x = 1 }\nb() { x = 2 }\ndraw(f){ b() }');
+    const call = instrs.find(i => i.op === OP.CALL_FN);
+    eq(call?.operands[0], 1);
+  });
+
+  await t.step('user function body contains RET', () => {
+    const b   = getBinary('inc(n) { return n + 1 }\ndraw(f){}');
+    const fn  = b.userFns[0];
+    const body = disassemble(b.bytecode.slice(fn.entry));
+    ok(body.some(i => i.op === OP.RET));
+  });
+
+  await t.step('return in user function emits value then RET', () => {
+    const b    = getBinary('double(n) { return n * 2 }\ndraw(f){}');
+    const fn   = b.userFns[0];
+    const body = disassemble(b.bytecode.slice(fn.entry));
+    ok(body.some(i => i.op === OP.MUL));
+    ok(body.some(i => i.op === OP.RET));
+  });
+
+  await t.step('forward reference: lifecycle function calls user fn defined after it', () => {
+    ok(compilesOk('draw(f){ noop() }\nnoop() { x = 1 }'));
+  });
+
+  await t.step('wrong argument count for user function is a compile error', () => {
+    ok(errorsOf('add(a, b) { return a + b }\ndraw(f){ add(1) }').length > 0);
+  });
+
+  await t.step('calling undefined function is still a compile error', () => {
+    ok(errorsOf('draw(f){ ghost() }').length > 0);
+  });
+
+  await t.step('redefining a builtin name is a compile error', () => {
+    ok(errorsOf('cls(c) { x = c }\ndraw(f){}').length > 0);
+  });
+
+  await t.step('duplicate user function definition is a compile error', () => {
+    ok(errorsOf('foo() { x = 1 }\nfoo() { x = 2 }\ndraw(f){}').length > 0);
+  });
+
+  await t.step('return outside function or audio is a compile error', () => {
+    ok(errorsOf('draw(f){ return 1 }').length > 0);
+  });
+
+  await t.step('user function param slots are bound (non-0xFF) in function table', () => {
+    const b = getBinary('add(a, b) { return a + b }\ndraw(f){}');
+    const fn = b.userFns[0];
+    eq(fn.paramSlots.length, 2);
+    ok(fn.paramSlots[0] !== 0xFF);
+    ok(fn.paramSlots[1] !== 0xFF);
+    ok(fn.paramSlots[0] !== fn.paramSlots[1]);
+  });
+
+  await t.step('assignments inside user function body are allowed', () => {
+    ok(compilesOk('set(v) { x = v }\ndraw(f){}'));
   });
 });

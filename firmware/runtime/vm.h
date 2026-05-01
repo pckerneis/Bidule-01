@@ -65,6 +65,8 @@ typedef enum {
     OP_PEEK_JUMP_F   = 0x54,   // [i16]
     // Built-in call
     OP_CALL          = 0x60,   // [u8 id][u8 argc]
+    // User-defined function call
+    OP_CALL_FN       = 0x61,   // [u16 fn_idx LE][u8 argc]
     // Array operations
     OP_ARR_GET       = 0x70,   // [u8 slot]
     OP_ARR_SET       = 0x71,   // [u8 slot]

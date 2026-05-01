@@ -16,6 +16,9 @@
 #define MAX_ARR_LIT_LEN 128
 #define MAX_ARR_DECLS   16
 #define MAX_ARR_ELEMS   256
+#define MAX_USER_FNS    64
+#define MAX_FN_PARAMS   8
+#define MAX_CALL_DEPTH  8
 
 // ─── Value ───────────────────────────────────────────────────────────────────
 
@@ -67,6 +70,14 @@ static struct {
     // ensures the memcpy is visible to core 1.
     Value    shadow[2][MAX_VARS];
     volatile uint8_t shadow_active;
+
+    // User-defined function table (populated during vm_load)
+    struct {
+        uint16_t entry;
+        uint8_t  params;
+        uint8_t  param_slots[MAX_FN_PARAMS];
+    } user_fns[MAX_USER_FNS];
+    uint16_t user_fn_count;
 
     // Per-core evaluation stacks
     Value    stack0[STACK_SIZE];
@@ -280,6 +291,10 @@ static Value exec(uint16_t entry, Value *globals, Value *stk) {
     int      sp = 0;
     vm.exit_exec = false;
 
+    // Call frame stack for user-defined function calls
+    struct { uint16_t ret_ip; } cframes[MAX_CALL_DEPTH];
+    int cfp = 0;
+
 #define PUSH(v)    do { if (sp < STACK_SIZE) stk[sp++] = (v); } while (0)
 #define PUSH_I(n)  PUSH(((Value){ VALUE_INT, (int32_t)(n) }))
 #define POP()      (sp > 0 ? stk[--sp] : (Value){ VALUE_INT, 0 })
@@ -358,6 +373,28 @@ static Value exec(uint16_t entry, Value *globals, Value *stk) {
             break;
         }
 
+        // ── User-defined function call ────────────────────────────────────────
+        case OP_CALL_FN: {
+            uint8_t  lo     = R8();
+            uint8_t  hi     = R8();
+            uint16_t fn_idx = (uint16_t)lo | ((uint16_t)hi << 8);
+            uint8_t  argc   = R8();
+            if (fn_idx >= vm.user_fn_count || cfp >= MAX_CALL_DEPTH) {
+                PUSH_I(0);
+                break;
+            }
+            int nparams = vm.user_fns[fn_idx].params;
+            Value args[MAX_FN_PARAMS] = {{ VALUE_INT, 0 }};
+            for (int i = argc - 1; i >= 0; i--) args[i] = POP();
+            for (int i = 0; i < nparams && i < MAX_FN_PARAMS; i++) {
+                uint8_t slot = vm.user_fns[fn_idx].param_slots[i];
+                if (slot < MAX_VARS) globals[slot] = args[i];
+            }
+            cframes[cfp++].ret_ip = ip;
+            ip = vm.user_fns[fn_idx].entry;
+            break;
+        }
+
         // ── Array operations ─────────────────────────────────────────────────
         case OP_ARR_GET: {
             uint8_t slot = R8();
@@ -382,7 +419,15 @@ static Value exec(uint16_t entry, Value *globals, Value *stk) {
             break;
         }
 
-        case OP_RET: goto done;
+        case OP_RET:
+            if (cfp > 0) {
+                Value ret = sp > 0 ? stk[--sp] : (Value){ VALUE_INT, 0 };
+                ip = cframes[--cfp].ret_ip;
+                PUSH(ret);
+            } else {
+                goto done;
+            }
+            break;
         }
     }
 done:
@@ -461,8 +506,8 @@ bool vm_load(const uint8_t *bin, uint32_t len) {
         vm.arrdeclsize[i] = (sz > MAX_ARR_ELEMS) ? MAX_ARR_ELEMS : (uint8_t)sz;
     }
 
-    // Entry points + parameter slots (13 bytes total)
-    if (p + 13 > end) return false;
+    // Entry points + parameter slots (13 bytes) + fn table header (4 bytes) = 17 bytes
+    if (p + 17 > end) return false;
     vm.off_init           = ru16(p); p += 2;
     vm.off_update         = ru16(p); p += 2;
     vm.param_update_frame = *p++;
@@ -472,12 +517,35 @@ bool vm_load(const uint8_t *bin, uint32_t len) {
     vm.param_draw_input   = *p++;
     vm.off_audio          = ru16(p); p += 2;
     vm.param_audio_t      = *p++;
+    uint16_t fn_count     = ru16(p); p += 2;
+    uint16_t fn_table_off = ru16(p); p += 2;
 
     // Bytecode
     uint32_t code_len = (uint32_t)(end - p);
     if (code_len > MAX_BYTECODE) return false;
     memcpy(vm.code, p, code_len);
     vm.code_len = (uint16_t)code_len;
+
+    // Parse user-defined function table from bytecode at fn_table_off
+    vm.user_fn_count = 0;
+    if (fn_count > 0 && fn_table_off < vm.code_len) {
+        uint16_t tp = fn_table_off;
+        uint16_t count = fn_count < MAX_USER_FNS ? fn_count : MAX_USER_FNS;
+        for (uint16_t i = 0; i < count; i++) {
+            if (tp >= vm.code_len) break;
+            uint8_t name_len = vm.code[tp++];
+            if (tp + name_len + 3 > vm.code_len) break;  // name + params + entry (u16)
+            tp += name_len;  // skip name (runtime only needs entry + param_slots)
+            uint8_t nparams = vm.code[tp++];
+            if (tp + 2 + nparams > vm.code_len) break;
+            vm.user_fns[i].entry  = ru16(vm.code + tp); tp += 2;
+            vm.user_fns[i].params = nparams;
+            for (uint8_t j = 0; j < nparams && j < MAX_FN_PARAMS; j++) {
+                vm.user_fns[i].param_slots[j] = vm.code[tp++];
+            }
+            vm.user_fn_count++;
+        }
+    }
 
     // Reset runtime state
     memset(vm.globals,  0, sizeof(vm.globals));

@@ -16,7 +16,7 @@ const OP = {
   EQ:0x30, NE:0x31, LT:0x32, LE:0x33, GT:0x34, GE:0x35, NOT:0x36,
   POP:0x40, DUP:0x41,
   JUMP:0x50, JUMP_T:0x51, JUMP_F:0x52, PEEK_JUMP_T:0x53, PEEK_JUMP_F:0x54,
-  CALL:0x60,
+  CALL:0x60, CALL_FN:0x61,
   ARR_GET:0x70, ARR_SET:0x71, ARR_LEN:0x72, PUSH_ARR_MUT:0x73,
   RET:0xFF,
 };
@@ -104,8 +104,31 @@ export class VM {
     this._eDraw    = r16();  this._pDF = r8();  this._pDI = r8();
     this._eAudio   = r16();  this._pAT = r8();
 
+    // User function table header
+    const fnCount    = r16();
+    const fnTableOff = r16();
+
     // Bytecode stream
-    this._code = bin.slice(p);
+    this._code    = bin.slice(p);
+
+    // Parse user-defined function table from bytecode at fnTableOff
+    this._userFns = [];
+    if (fnCount > 0 && fnTableOff < this._code.length) {
+      let tp = fnTableOff;
+      const c = this._code;
+      for (let i = 0; i < fnCount; i++) {
+        if (tp >= c.length) break;
+        const nameLen = c[tp++];
+        if (tp + nameLen + 3 > c.length) break;  // name + params + entry(u16)
+        tp += nameLen;  // skip name (runtime uses entry + param_slots)
+        const nparams = c[tp++];
+        if (tp + 2 + nparams > c.length) break;
+        const entry = c[tp] | (c[tp + 1] << 8); tp += 2;
+        const paramSlots = [];
+        for (let j = 0; j < nparams; j++) paramSlots.push(c[tp++]);
+        this._userFns.push({ entry, paramSlots });
+      }
+    }
 
     // Reset live state
     this._globals = new Int32Array(MAX_VARS);
@@ -189,6 +212,9 @@ export class VM {
     const stkT = new Uint8Array(MAX_STACK);
     let ip = entry, sp = 0, done = false;
     this._exit = false;
+
+    // Call frame stack for user-defined function returns
+    const cframes = [];
 
     const PI  = n       => { stkT[sp] = T_INT; stk[sp++] = n | 0; };
     const PA  = (t, v)  => { stkT[sp] = t;     stk[sp++] = v; };
@@ -275,7 +301,34 @@ export class VM {
         break;
       }
 
-      case OP.RET: done = true; break;
+      // ── User-defined function call ─────────────────────────────────────────────
+      case OP.CALL_FN: {
+        const fnIdx = R8() | (R8() << 8);
+        const argc  = R8();
+        const fn    = this._userFns[fnIdx];
+        if (!fn || cframes.length >= 8) { stkT[sp]=T_INT; stk[sp++]=0; break; }
+        const args = [];
+        for (let i=argc-1; i>=0; i--) args[i]=PO();
+        for (let i=0; i<fn.paramSlots.length; i++) {
+          const slot = fn.paramSlots[i];
+          if (slot < MAX_VARS) G[slot] = args[i] ? (args[i].v|0) : 0;
+        }
+        cframes.push(ip);
+        ip = fn.entry;
+        break;
+      }
+
+      case OP.RET:
+        if (cframes.length > 0) {
+          const retT = sp > 0 ? stkT[sp-1] : T_INT;
+          const retV = sp > 0 ? stk[sp-1]  : 0;
+          if (sp > 0) sp--;
+          ip = cframes.pop();
+          stkT[sp] = retT; stk[sp++] = retV;
+        } else {
+          done = true;
+        }
+        break;
       }
     }
 

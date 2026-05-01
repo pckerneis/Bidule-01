@@ -51,8 +51,8 @@ Key properties:
 
 ```
 program    := top_level*
-top_level  := array_decl | fn_def
-fn_def     := IDENT '(' param_list ')' block
+top_level  := array_decl | udf_def
+udf_def    := 'fn' IDENT '(' param_list ')' block
 param_list := (IDENT (',' IDENT)*)?
 array_decl := IDENT '[' NUMBER ']'
 
@@ -83,6 +83,9 @@ CHAR_LIT     := "'" ASCII_CHAR "'"
 STRING       := '"' (ASCII_CHAR | '\\' | '\"')* '"'
 IDENT        := [a-zA-Z_][a-zA-Z0-9_]*
 ```
+
+The special lifecycle hooks init, update, draw, and audio are not declared with fn but are instead treated as predefined
+entry points by the runtime.
 
 ### 2.3 Types
 
@@ -240,7 +243,21 @@ audio(t)
 
 See [Section 5 — Runtime Specification](#5-runtime--firmware-specification) for calling semantics.
 
-User-defined functions beyond these four are not supported in v1.
+## 2.11 User‑defined functions
+
+The language supports `fn` functions for code reuse. The syntax is:
+
+```
+fn ident('(' param_list ')') block
+```
+
+
+- `param_list` is `(IDENT (',' IDENT)*)?`.
+- All parameters are bound to scalar slots at compile time and behave like global variables inside the function.
+- `fn`‑functions may return an integer via `return <expr>`; falling off the end implicitly returns `0`.
+- `fn`‑functions may call built‑in functions and other `fn`‑functions.
+
+User‑defined functions may not be recursive beyond the call‑stack limit (see §5. Runtime). Using `fn` is optional; carts that do not declare any `fn`‑functions are compatible with v1 runtimes.
 
 ---
 
@@ -627,6 +644,25 @@ POP
 skip:
 NOT NOT
 ```
+
+## 4.6.1 User‑defined function table
+
+In the compiled‑cart format, after the four lifecycle‑hook records, the runtime includes a user‑function table:
+
+| Field | Size |
+|---|---|
+| `fn_count` | 2 B |
+| `fn_table_off` | 2 B |
+
+The function table consists of `fn_count` entries. Each entry contains:
+
+- `name_len` (1 B)
+- `name_bytes` (name_len B)
+- `params` (1 B) — number of parameters
+- `entry` (2 B LE) — bytecode offset of the function body
+- `param_slots` — `params` × 1 B — scalar slot indices for each parameter
+
+User‑defined functions are invoked via a `CALL_FN` opcode (`0x61`), which takes a function index and argument count.
 
 ### 4.7 Distribution & Flashing
 
