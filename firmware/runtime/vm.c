@@ -323,6 +323,11 @@ static Value exec(uint16_t entry, Value *globals, Value *stk) {
             if (s < MAX_VARS) globals[s] = v;
             break;
         }
+        case OP_LOAD_ARR: {
+            uint8_t s = R8();
+            PUSH(s < MAX_VARS ? globals[s] : ((Value){ VALUE_INT, 0 }));
+            break;
+        }
 
         // ── Arithmetic ───────────────────────────────────────────────────────
         case OP_ADD: { Value b = POP(), a = POP(); PUSH_I(a.i + b.i);              break; }
@@ -416,6 +421,36 @@ static Value exec(uint16_t entry, Value *globals, Value *stk) {
         case OP_ARR_LEN: {
             uint8_t slot = R8();
             PUSH_I(slot < vm.arrdecl_count ? vm.arrdeclsize[slot] : 0);
+            break;
+        }
+        case OP_DYN_ARR_GET: {
+            uint8_t slot = R8();
+            int     idx  = (int)POP().i;
+            Value   v    = slot < MAX_VARS ? globals[slot] : (Value){ VALUE_INT, 0 };
+            PUSH_I(arr_elem(v, idx));
+            break;
+        }
+        case OP_DYN_ARR_SET: {
+            uint8_t slot = R8();
+            Value   val  = POP();
+            int     idx  = (int)POP().i;
+            Value   v    = slot < MAX_VARS ? globals[slot] : (Value){ VALUE_INT, 0 };
+            if (v.type == VALUE_ARR_MUT) {
+                int i = v.i;
+                if (i >= 0 && i < vm.arrdecl_count && idx >= 0 && idx < vm.arrdeclsize[i])
+                    vm.arrpool[i][idx] = val.i;
+            }
+            break;
+        }
+        case OP_DYN_ARR_LEN: {
+            uint8_t slot = R8();
+            Value   v    = slot < MAX_VARS ? globals[slot] : (Value){ VALUE_INT, 0 };
+            if (v.type == VALUE_ARR_LIT)
+                PUSH_I(v.i >= 0 && v.i < vm.arrlit_count ? vm.arrlitlen[v.i] : 0);
+            else if (v.type == VALUE_ARR_MUT)
+                PUSH_I(v.i >= 0 && v.i < vm.arrdecl_count ? vm.arrdeclsize[v.i] : 0);
+            else
+                PUSH_I(0);
             break;
         }
 
