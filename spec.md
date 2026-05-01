@@ -4,7 +4,7 @@
 > This document is the authoritative specification for the Bidule 01 platform.
 > Sections marked 🔲 are placeholders pending design decisions.
 
-**Spec version:** 0.4  
+**Spec version:** 0.5  
 **Last updated:** 2026-05-01
 
 ---
@@ -44,7 +44,6 @@ Key properties:
 - Integer-only arithmetic (no floating-point)
 - Global scope only (variables and arrays)
 - No dynamic memory allocation; all arrays are globally declared with a fixed size
-- In V1, no user-defined functions beyond the four lifecycle hooks
 - Single-file programs
 
 ### 2.2 Grammar
@@ -87,8 +86,15 @@ STRING       := '"' (ASCII_CHAR | '\\' | '\"')* '"'
 IDENT        := [a-zA-Z_][a-zA-Z0-9_]*
 ```
 
-The special lifecycle hooks init, update, draw, and audio are not declared with fn but are instead treated as predefined
-entry points by the runtime.
+Top-level assignments act as declarations and are executed before any lifecycle function.
+
+Function calls may appear both as expressions and as standalone statements.
+
+The special lifecycle hooks `init`, `update`, `draw`, and `audio` are not declared using `fn` and are recognized by name
+at the top level. Their syntax follows the same function structure but omits the `fn` keyword.
+
+The grammar permits assignment syntactically, but semantic rules restrict assignment operators (`=`, `+=`, etc.) to `int`
+variables only. Assigning to an `arr_ref` variable after declaration is a compile-time error.
 
 ### 2.3 Types
 
@@ -96,7 +102,7 @@ The language has two value kinds: `int` and `arr_ref`.
 
 `int` is a signed 32-bit integer with wraparound semantics.
 
-`arr_ref` is a reference to either a mutable array in the array pool or a read-only array literal.
+`arr_ref` is a reference to either a mutable array in the global array pool or a read-only array literal.
 
 There is no boolean type; integers are used for truthiness, where `0` is false and any other value is true.
 
@@ -139,7 +145,6 @@ From highest to lowest:
   - `foo = "hello"` (top-level or inside a function) creates an `arr_ref` variable referencing the interned `"hello"` literal array.
   - `foo[16]` at top level creates an `arr_ref` variable referencing the mutable array of size 16.
 - Top-level declarations of the form `IDENT '=' NUMBER` or `IDENT '=' STRING` are guaranteed to execute before any lifecycle function, including `init()`.
-
 - Once a variable’s kind is established, it cannot change. Mixed re‑declarations, such as:
 
 ```
@@ -158,14 +163,15 @@ are **compile‑time errors** ("cannot change value‑kind of variable").
   - Array indexing: `foo[i]` reads/writes the array it references.
   - The `.length` property: `foo.length` returns the declared size of that array.
 - A variable of kind `int` may be used in any integer expression, comparison, or arithmetic operator.
-- Comparing `arr_ref` values is only allowed if the comparison is by reference identity; otherwise it is a compile-time error.
+- Using `==` or `!=` on `arr_ref` values is a compile-time error. Use `streq` or `arreq` for content comparison.
 
-Array‑references are first‑class values but are not integers; you cannot add, subtract, or compare them directly as numbers. The only operations on `arr_ref` are those defined by the language (indexing, length, and uses required by built‑ins such as `print` and `streq`).
+Array‑references are first‑class values but are not integers; you cannot add, subtract, or compare them directly as numbers.
+The only operations on `arr_ref` are those defined by the language (indexing, length, and uses required by built‑ins such as
+`print` and `streq`).
 
 ### 2.7 Control Flow
 
-Braces are mandatory for multi-statement blocks. They can be omitted
-for single statement branches.
+Braces are mandatory for multi-statement blocks. They can be omitted for single statement branches.
 
 ```
 if (condition) {
@@ -187,13 +193,22 @@ for (i = 0; i < 10; i++) {
 }
 ```
 
-`break` exits the innermost loop immediately. `continue` skips to the next iteration. Both are only valid inside `while` or `for` blocks.
+`break` exits the innermost loop immediately. `continue` skips to the next iteration.
+Both are only valid inside `while` or `for` blocks.
 
-`return <expr>` is only valid inside `audio(t)`. It evaluates the expression and immediately returns it as the sample value. Using `return` outside `audio(t)` is a **compile error**. Falling off the end of `audio(t)` without a `return` implicitly returns `128` (mid-point / silence).
+`return <expr>` is valid inside `audio(t)` and inside `fn` functions.
+
+- In `audio(t)`, it defines the output sample.
+- In `fn` functions, it returns an integer value.
+- Using `return` in `init`, `update`, or `draw` is a compile-time error.
+
+Falling off the end of `audio(t)` without a `return` implicitly returns `128` (mid-point / silence).
 
 ## 2.8 Arrays
 
-Arrays are globally declared, fixed‑size sequences of integers. A global array declaration binds the declared name to an `arr_ref`. `arr_ref` values may be stored in variables, passed to functions, and used with `[]` and `.length`.
+Arrays are globally declared, fixed‑size sequences of 32-bit signed integers.
+A global array declaration binds the declared name to an `arr_ref`. `arr_ref` values may be stored in variables,
+passed to functions, and used with `[]` and `.length`. `arr_ref` is NOT nullable.
 
 ### Declaration
 
@@ -201,17 +216,21 @@ Global declarations appear at the top level of the program (not inside a block).
 
 ```c
 buf[32]           // mutable array of 32 integers
-greeting = “hi”   // arr_ref variable bound to a string literal
+greeting = "hi"   // arr_ref variable bound to a string literal
 lives = 3         // int variable initialised to 3
 ```
 
-`buf[32]` declares a mutable array of 32 integers and creates an `arr_ref` variable named `buf`. All elements are initialised to `0` at cart load time.
+`buf[32]` declares a mutable array of 32 integers and creates an `arr_ref` variable named `buf`.
+All elements are initialised to `0` at cart load time.
 
-`greeting = “hi”` declares an `arr_ref` variable bound to the interned `”hi”` literal array. The binding is established before any lifecycle function runs.
+`greeting = "hi"` declares an `arr_ref` variable bound to the interned `"hi"` literal array.
+The binding is established before any lifecycle function runs.
 
-`lives = 3` declares an `int` variable initialised to `3` before any lifecycle function runs. This is equivalent to assigning `lives = 3` at the top of `init()`, but is guaranteed to execute first.
+`lives = 3` declares an `int` variable initialised to `3` before any lifecycle function runs.
+This is equivalent to assigning `lives = 3` at the top of `init()`, but is guaranteed to execute first.
 
-A name may only be declared once. A declaration that is later assigned a value of a different kind, or vice versa, is a **compile‑time error** (“cannot change value‑kind of variable”).
+A name may only be declared once. A declaration that is later assigned a value of a different kind,
+or vice versa, is a **compile‑time error** (“cannot change value‑kind of variable”).
 
 Fixed limits (max array count, max size per array, total element pool) are defined in §6.3.
 
@@ -248,7 +267,10 @@ print(foo, 0, 0, 1)
 
 Element assignment to a literal array reference (via `[]`) is a **silent no‑op**.
 
-Escape sequences: `\\` — literal backslash; `\"` — literal double quote. Only printable ASCII characters (codes 32–127) are allowed. Non‑ASCII source characters are a **compile‑time error**.
+Escape sequences: `\\` — literal backslash; `\"` — literal double quote.
+
+Source files are UTF-8 encoded, but string and char literals are restricted to printable ASCII (32–126).
+Any non-ASCII character in a literal is a compile-time error.
 
 Maximum literal length (excluding the null‑terminator) is defined in §6.3.
 
@@ -287,7 +309,7 @@ Lifecycle hooks use the same value-kind rules as user-defined functions: paramet
 The language supports `fn` functions for code reuse. The syntax is:
 
 ```
-fn ident('(' param_list ')') block
+fn IDENT '(' param_list ')' block
 ```
 
 - `param_list` is `(typed_param (',' typed_param)*)?` where `typed_param` is `IDENT ('[' ']')?`.
@@ -399,7 +421,8 @@ rnd(n)           → integer   // random integer in [0, n−1]
 
 ### 3.4 Audio Utilities
 
-No dedicated audio built-ins are planned for v1. Audio synthesis is expected to be done using integer math directly inside `audio(t)`. The math utility functions (`abs`, `min`, `max`, etc.) are available inside `audio(t)`.
+No dedicated audio built-ins are planned for v1. Audio synthesis is expected to be done using integer math directly
+inside `audio(t)`. The math utility functions (`abs`, `min`, `max`, etc.) are available inside `audio(t)`.
 
 ### 3.5 Persistence
 
@@ -480,7 +503,8 @@ utility). Future versions may introduce an explicit `clearsave()` built-in.
 
 ### 3.6 Cart utilities
 
-Cart Utilities allow to inspect and load available cart files. This allows multi-cart programs or cart loaders. The default cart loader is built with this API.
+Cart Utilities allow inspection and loading of available cart files. This allows multi-cart systems or cart loaders.
+The default cart loader is built with this API.
 
 **API:**
 
@@ -499,13 +523,16 @@ streq(a, b)        → integer
 arreq(a, b, len)   → integer
 ```
 
-`streq(a, b)` compares two null-terminated integer sequences element by element. Returns `1` if both sequences contain the same elements up to and including the first `0`, `0` otherwise. `a` and `b` may be mutable or literal array references. Out-of-bounds reads return `0`, so a shorter array naturally compares unequal to a longer one at the point the short one ends. Comparison is capped at `MAX_ARR_ELEMS + 1` iterations as a safeguard against arrays with no null terminator.
+`streq(a, b)` compares two null-terminated integer sequences element by element. Returns `1` if both sequences contain
+the same elements up to and including the first `0`, `0` otherwise. `a` and `b` may be mutable or literal array references. Out-of-bounds reads return `0`, so a shorter array naturally compares unequal to a longer one at the point the short one ends. Comparison is capped at `MAX_ARR_ELEMS + 1` iterations as a safeguard against arrays with no null terminator.
 
-`arreq(a, b, len)` compares exactly `len` elements of `a` and `b`. Returns `1` if all `len` elements are equal, `0` otherwise. A `len` of `0` always returns `1`.
+`arreq(a, b, len)` compares exactly `len` elements of `a` and `b`. Returns `1` if all `len` elements are equal, `0` otherwise.
+A `len` of `0` always returns `1`.
 
 Both functions are primarily intended for comparing char-code arrays (e.g. the result of `cartmeta()` against a string literal).
 
-`streq(a, b)` and `arreq(a, b, len)` compare array **contents**, not array identity. Both arguments must be `arr_ref` values. Comparing `arr_ref` values with `==` or `!=` tests reference identity only, not element equality; using `==`/`!=` between two `arr_ref` values is a **compile-time error** unless reference identity comparison is explicitly intended and defined.
+`streq(a, b)` and `arreq(a, b, len)` compare array **contents**, not array identity. Both arguments must be `arr_ref` values.
+Comparing `arr_ref` values with `==` or `!=` is a **compile-time error**.
 
 ---
 
@@ -812,19 +839,26 @@ Example: `input & 1` tests Left; `input & 16` tests A. `btn()` and `btnp()` rema
 
 `audio(t)` is called by the audio subsystem running on **core 1**, 8000 times per second (8 kHz sample rate).
 
-- `t` is the **absolute sample index** since the current cart started, reset to `0` when the cart begins execution (i.e. after `init()` completes) and incremented once per output sample, as a 32-bit signed integer. Wraps from 2³¹−1 back to −2³¹ (~74.6 hours of audio at 8 kHz).
-- The return value of `audio(t)` a the output sample interpreted as an **unsigned 8-bit integer in the range [0, 255]**. Only the least significant 8 bits are used; higher bits are discarded.
+- `t` is the **absolute sample index** since the current cart started, reset to `0` when the cart begins execution
+  (i.e. after `init()` completes) and incremented once per output sample, as a 32-bit signed integer.
+  Wraps from 2³¹−1 back to −2³¹ (~74.6 hours of audio at 8 kHz).
+- The return value of `audio(t)` is the output sample interpreted as an **unsigned 8-bit integer in the range [0, 255]**.
+  The returned integer is truncated to 8 bits: `output = return_value & 255`.
 - `audio(t)` may call math utility functions (`abs`, `min`, `max`, etc.) but may not call any graphics, input, or persistence built-ins.
 - `audio(t)` must not write to any global variable. This constraint is enforced at compile time.
 
 **Global variable access — shadow copy:**
 
-`audio(t)` reads the current global variable table from a **shadow copy** of the live variable table, not the live table itself. Each slot stores the 32-bit value of the corresponding variable, which may represent either an `int` or an `arr_ref` according to the compiler's static kind tracking. The runtime does not need to interpret kinds at this stage.
+`audio(t)` reads the current global variable table from a **shadow copy** of the live variable table, not the live table
+itself. Each slot stores the 32-bit value of the corresponding variable, which may represent either an `int` or an `arr_ref`
+according to the compiler's static kind tracking. The runtime does not need to interpret kinds at this stage.
 
 - The runtime maintains **two shadow buffers** (A and B), each 256 bytes (64 variables × 4 bytes).
-- After each `draw()` call completes, the runtime writes the current live variable table into the inactive buffer, then atomically flips the active buffer index.
+- After each `draw()` call completes, the runtime writes the current live variable table into the inactive buffer, then
+  atomically flips the active buffer index.
 - Core 1 always reads from the buffer indicated by the active index. It never sees a partially written snapshot.
-- A global variable written in `update()` will be visible to `audio(t)` at the start of the next frame — a maximum latency of one frame (~33ms). This is acceptable for reactive audio.
+- A global variable written in `update()` will be visible to `audio(t)` at the start of the next frame — a maximum
+  latency of one frame (~33ms). This is acceptable for reactive audio.
 
 **Core assignment:**
 
@@ -833,11 +867,14 @@ Example: `input & 1` tests Left; `input & 16` tests A. `btn()` and `btnp()` rema
 | Core 0 | Main loop: `init()`, `update()`, `draw()`, display flush, USB, input polling |
 | Core 1 | Audio callback: `audio(t)`, DAC/PWM output |
 
-**Audio overrun:** Core 1 uses a busy-wait loop that outputs one sample then spins until 45 µs have elapsed. If `audio(t)` itself takes longer than 45 µs, the busy-wait period shrinks to zero and the next sample starts immediately. No silence is inserted, no error is raised; the effective sample rate degrades proportionally to the overrun.
+**Audio overrun:** Core 1 uses a busy-wait loop that outputs one sample then spins until 45 µs have elapsed.
+If `audio(t)` itself takes longer than 45 µs, the busy-wait period shrinks to zero and the next sample starts immediately.
+No silence is inserted, no error is raised; the effective sample rate degrades proportionally to the overrun.
  
 ### 5.4 Cart Switching
 
-A cart may call `loadcart(i)` at any point during `update()` to request a switch to another cart. The switch takes effect at the end of the current frame, after `draw()` and the display flush complete. The sequence is:
+A cart may call `loadcart(i)` at any point during `update()` to request a switch to another cart.
+The switch takes effect at the end of the current frame, after `draw()` and the display flush complete. The sequence is:
 
 1. The current cart's execution stops (remaining `update()` body is aborted).
 2. The new cart binary is loaded and validated. If validation fails, the current cart continues running unchanged; `loadcart()` returns `0`.
@@ -915,7 +952,12 @@ Maximum **64 global variables** per cart. Each variable occupies one 32-bit slot
 
 All arrays are globally declared and statically sized. The runtime maintains two array regions:
 
-**Array literal table (read-only):** All unique string literals in a cart are known at compile time. The compiler collects them and embeds them as a read-only table in the compiled binary. Each entry is a null-terminated sequence of char codes. At runtime these are accessible as read-only array references; element assignment to a literal is a silent no-op. Array references are not copied into the array pool; only the backing arrays are stored there.
+**Array literal table (read-only):** All unique string literals in a cart are known at compile time.
+The compiler collects them and embeds them as a read-only table in the compiled binary.
+Each entry is a null-terminated sequence of char codes. At runtime these are accessible as read-only array references;
+element assignment to a literal is a silent no-op.
+Array references are not copied into the global array pool.
+Literal arrays are stored in the read-only literal table, not in the mutable global array pool.
 
 **Global array pool (mutable):** The array pool stores the backing data for mutable arrays declared with `name[N]` syntax, allocated in declaration order from a flat pool. All elements are initialised to `0` at cart load time. The pool is a contiguous block of integer storage subdivided at compile time — no dynamic allocation occurs.
 
@@ -934,9 +976,9 @@ Arrays are **not** included in the variable table shadow copies (§6.2). Array d
 
 ### 6.4 Evaluation Stack
 
-The VM uses a per-core operand stack of **32 slots** (one for core 0, one for core 1). Stack overflow is not checked in v1; exceeding 32 operands in a single expression causes undefined behaviour.
+The VM uses a per-core operand stack of **32 slots** (one for core 0, one for core 1).
 
-There is no traditional call stack in v1: the four lifecycle functions are direct entry points, not called from one another, and user-defined functions are not supported. The "call depth" is therefore always 1.
+Stack overflow occurs when the VM operand stack exceeds 32 entries. This triggers a runtime error (see §5.5).
 
 ---
 
@@ -973,7 +1015,7 @@ There is no traditional call stack in v1: the four lifecycle functions are direc
 | A | GP10 |
 | B | GP11 |
 
-- Debounce: no software debounce in v1 — buttons are sampled once per frame (~33 ms). Mechanical debounce on the PCB is recommended.
+- 🔲 Debounce TBD.
 
 ### 7.4 Audio Output
 
