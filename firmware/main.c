@@ -116,7 +116,13 @@ int main(void) {
         // update audio shadow buffer after draw (§5.3)
         vm_sync_audio_shadow();
 
-        if (vm_cart_switched()) frame = 0; else frame++;
+        if (vm_cart_switched()) {
+            vm_call_init();
+            audio_reset_t();
+            frame = 0;
+        } else {
+            frame++;
+        }
 
         sleep_until(frame_end);
     }
