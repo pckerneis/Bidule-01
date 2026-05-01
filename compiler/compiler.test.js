@@ -485,59 +485,59 @@ Deno.test('User-defined functions', async (t) => {
   });
 
   await t.step('one user function: fnCount is 1', () => {
-    eq(getBinary('add(a, b) { return a + b }\ndraw(f){}').fnCount, 1);
+    eq(getBinary('fn add(a, b) { return a + b }\ndraw(f){}').fnCount, 1);
   });
 
   await t.step('user function appears in userFns table with correct name', () => {
-    const b = getBinary('add(a, b) { return a + b }\ndraw(f){}');
+    const b = getBinary('fn add(a, b) { return a + b }\ndraw(f){}');
     eq(b.userFns.length, 1);
     eq(b.userFns[0].name, 'add');
   });
 
   await t.step('user function param count is recorded in function table', () => {
-    const b = getBinary('add(a, b) { return a + b }\ndraw(f){}');
+    const b = getBinary('fn add(a, b) { return a + b }\ndraw(f){}');
     eq(b.userFns[0].params, 2);
   });
 
   await t.step('user function with no params has param count 0', () => {
-    const b = getBinary('noop() { x = 1 }\ndraw(f){}');
+    const b = getBinary('fn noop() { x = 1 }\ndraw(f){}');
     eq(b.userFns[0].params, 0);
   });
 
   await t.step('calling a user function as statement emits CALL_FN + POP', () => {
-    const instrs = opsOf('noop() { x = 1 }\ndraw(f){ noop() }');
+    const instrs = opsOf('fn noop() { x = 1 }\ndraw(f){ noop() }');
     ok(instrs.some(i => i.op === OP.CALL_FN));
     ok(instrs.some(i => i.op === OP.POP));
   });
 
   await t.step('calling a user function in expression emits CALL_FN without POP before STORE', () => {
-    const instrs = opsOf('inc(n) { return n + 1 }\ndraw(f){ x = inc(3) }');
+    const instrs = opsOf('fn inc(n) { return n + 1 }\ndraw(f){ x = inc(3) }');
     ok(instrs.some(i => i.op === OP.CALL_FN));
     const callIdx = instrs.findIndex(i => i.op === OP.CALL_FN);
     ok(instrs[callIdx + 1]?.op !== OP.POP);
   });
 
   await t.step('CALL_FN carries correct fn index (0 for first user function)', () => {
-    const instrs = opsOf('first() { x = 1 }\ndraw(f){ first() }');
+    const instrs = opsOf('fn first() { x = 1 }\ndraw(f){ first() }');
     const call = instrs.find(i => i.op === OP.CALL_FN);
     eq(call?.operands[0], 0);
   });
 
   await t.step('second user function gets fn index 1', () => {
-    const instrs = opsOf('a() { x = 1 }\nb() { x = 2 }\ndraw(f){ b() }');
+    const instrs = opsOf('fn a() { x = 1 }\nfn b() { x = 2 }\ndraw(f){ b() }');
     const call = instrs.find(i => i.op === OP.CALL_FN);
     eq(call?.operands[0], 1);
   });
 
   await t.step('user function body contains RET', () => {
-    const b   = getBinary('inc(n) { return n + 1 }\ndraw(f){}');
+    const b   = getBinary('fn inc(n) { return n + 1 }\ndraw(f){}');
     const fn  = b.userFns[0];
     const body = disassemble(b.bytecode.slice(fn.entry));
     ok(body.some(i => i.op === OP.RET));
   });
 
   await t.step('return in user function emits value then RET', () => {
-    const b    = getBinary('double(n) { return n * 2 }\ndraw(f){}');
+    const b    = getBinary('fn double(n) { return n * 2 }\ndraw(f){}');
     const fn   = b.userFns[0];
     const body = disassemble(b.bytecode.slice(fn.entry));
     ok(body.some(i => i.op === OP.MUL));
@@ -545,11 +545,11 @@ Deno.test('User-defined functions', async (t) => {
   });
 
   await t.step('forward reference: lifecycle function calls user fn defined after it', () => {
-    ok(compilesOk('draw(f){ noop() }\nnoop() { x = 1 }'));
+    ok(compilesOk('draw(f){ noop() }\nfn noop() { x = 1 }'));
   });
 
   await t.step('wrong argument count for user function is a compile error', () => {
-    ok(errorsOf('add(a, b) { return a + b }\ndraw(f){ add(1) }').length > 0);
+    ok(errorsOf('fn add(a, b) { return a + b }\ndraw(f){ add(1) }').length > 0);
   });
 
   await t.step('calling undefined function is still a compile error', () => {
@@ -557,11 +557,11 @@ Deno.test('User-defined functions', async (t) => {
   });
 
   await t.step('redefining a builtin name is a compile error', () => {
-    ok(errorsOf('cls(c) { x = c }\ndraw(f){}').length > 0);
+    ok(errorsOf('fn cls(c) { x = c }\ndraw(f){}').length > 0);
   });
 
   await t.step('duplicate user function definition is a compile error', () => {
-    ok(errorsOf('foo() { x = 1 }\nfoo() { x = 2 }\ndraw(f){}').length > 0);
+    ok(errorsOf('fn foo() { x = 1 }\nfn foo() { x = 2 }\ndraw(f){}').length > 0);
   });
 
   await t.step('return outside function or audio is a compile error', () => {
@@ -569,7 +569,7 @@ Deno.test('User-defined functions', async (t) => {
   });
 
   await t.step('user function param slots are bound (non-0xFF) in function table', () => {
-    const b = getBinary('add(a, b) { return a + b }\ndraw(f){}');
+    const b = getBinary('fn add(a, b) { return a + b }\ndraw(f){}');
     const fn = b.userFns[0];
     eq(fn.paramSlots.length, 2);
     ok(fn.paramSlots[0] !== 0xFF);
@@ -578,6 +578,14 @@ Deno.test('User-defined functions', async (t) => {
   });
 
   await t.step('assignments inside user function body are allowed', () => {
-    ok(compilesOk('set(v) { x = v }\ndraw(f){}'));
+    ok(compilesOk('fn set(v) { x = v }\ndraw(f){}'));
+  });
+
+  await t.step('fn keyword without a name is a compile error', () => {
+    ok(errorsOf('fn() {}\ndraw(f){}').length > 0);
+  });
+
+  await t.step('using fn keyword with a lifecycle name is a compile error', () => {
+    ok(errorsOf('fn draw(f) {}\ndraw(f){}').length > 0);
   });
 });

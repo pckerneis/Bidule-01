@@ -146,7 +146,7 @@ function lex(src) {
                         (src[i] >= 'A' && src[i] <= 'Z') || (src[i] >= '0' && src[i] <= '9'))) {
         s += src[i++];
       }
-      const KWS = new Set(['if', 'else', 'while', 'for', 'break', 'continue', 'return']);
+      const KWS = new Set(['if', 'else', 'while', 'for', 'break', 'continue', 'return', 'fn']);
       tokens.push({ type: KWS.has(s) ? 'KW' : 'IDENT', value: s, line });
       continue;
     }
@@ -865,13 +865,59 @@ export function compile(source) {
   // ── Top-level: array declarations, lifecycle functions, user-defined functions
   // Array declaration:         IDENT '[' NUMBER ']'
   // Lifecycle definition:      IDENT '(' params ')' block  (IDENT in LIFECYCLE)
-  // User function definition:  IDENT '(' params ')' block  (IDENT not in LIFECYCLE)
+  // User function definition:  'fn' IDENT '(' params ')' block
 
   const fnDefs      = {};   // name → { params, bodyTokens, nameLine, isUserFn }
   const userFnNames = [];   // user function names in declaration order
 
   while (pos < tokens.length && tokens[pos].type !== 'EOF') {
     const t = tokens[pos];
+
+    // User function: 'fn' IDENT '(' params ')' block
+    if (t.type === 'KW' && t.value === 'fn') {
+      pos++;  // consume 'fn'
+      const nameTok = tokens[pos];
+      if (!nameTok || nameTok.type !== 'IDENT') {
+        ctx.error(`line ${t.line}: expected function name after 'fn'`);
+        while (pos < tokens.length && !(tokens[pos].type === 'OP' && tokens[pos].value === '{')) pos++;
+        let depth = 0;
+        while (pos < tokens.length) { const v = tokens[pos++].value; if (v==='{') depth++; else if (v==='}' && --depth===0) break; }
+        continue;
+      }
+      pos++;  // consume name
+      const name     = nameTok.value;
+      const nameLine = nameTok.line;
+      if (name in BUILTINS)
+        ctx.error(`line ${nameLine}: cannot redefine built-in function '${name}'`);
+      if (name in LIFECYCLE)
+        ctx.error(`line ${nameLine}: '${name}' is a lifecycle function name; define it without 'fn'`);
+      if (tokens[pos]?.type !== 'OP' || tokens[pos].value !== '(') {
+        ctx.error(`line ${nameLine}: expected '(' after '${name}'`); continue;
+      }
+      pos++;  // '('
+      const params = [];
+      while (tokens[pos]?.type === 'IDENT') {
+        params.push(tokens[pos++].value);
+        if (tokens[pos]?.type === 'OP' && tokens[pos].value === ',') pos++;
+      }
+      if (tokens[pos]?.type !== 'OP' || tokens[pos].value !== ')') {
+        ctx.error(`line ${nameLine}: expected ')' in '${name}' parameters`);
+      } else { pos++; }
+      if (name in fnDefs) ctx.error(`line ${nameLine}: '${name}' defined more than once`);
+      if (tokens[pos]?.type !== 'OP' || tokens[pos].value !== '{') {
+        ctx.error(`line ${nameLine}: expected '{' for '${name}' body`); continue;
+      }
+      const bodyStart = pos;
+      let depth = 0;
+      while (pos < tokens.length) {
+        const v = tokens[pos].value;
+        if (v === '{') depth++; else if (v === '}' && --depth === 0) { pos++; break; }
+        pos++;
+      }
+      fnDefs[name] = { params, bodyTokens: tokens.slice(bodyStart, pos), nameLine, isUserFn: true };
+      userFnNames.push(name);
+      continue;
+    }
 
     if (t.type !== 'IDENT') {
       ctx.error(`line ${t.line}: expected array declaration or function definition, got '${t.value}'`);
@@ -906,13 +952,21 @@ export function compile(source) {
       continue;
     }
 
+    // Lifecycle function definition: IDENT '(' params ')' block
     const name     = t.value;
     const nameLine = t.line;
-    const isUserFn = !(name in LIFECYCLE);
     pos++;
 
-    if (name in BUILTINS) {
-      ctx.error(`line ${nameLine}: cannot redefine built-in function '${name}'`);
+    if (!(name in LIFECYCLE)) {
+      ctx.error(`line ${nameLine}: expected lifecycle function (init/update/draw/audio), array declaration, or 'fn' definition, got '${name}'`);
+      while (pos < tokens.length && !(tokens[pos].type === 'OP' && tokens[pos].value === '{')) pos++;
+      let depth = 0;
+      while (pos < tokens.length) {
+        const v = tokens[pos++].value;
+        if (v === '{') depth++;
+        else if (v === '}' && --depth === 0) break;
+      }
+      continue;
     }
 
     if (tokens[pos]?.type !== 'OP' || tokens[pos].value !== '(') {
@@ -946,8 +1000,7 @@ export function compile(source) {
       pos++;
     }
 
-    fnDefs[name] = { params, bodyTokens: tokens.slice(bodyStart, pos), nameLine, isUserFn };
-    if (isUserFn) userFnNames.push(name);
+    fnDefs[name] = { params, bodyTokens: tokens.slice(bodyStart, pos), nameLine, isUserFn: false };
   }
 
   // Register user functions before compiling any body (enables forward references)

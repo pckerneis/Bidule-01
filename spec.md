@@ -89,14 +89,16 @@ entry points by the runtime.
 
 ### 2.3 Types
 
-The language has two types:
+The language has two **value kinds**:
 
 | Type | Description |
 |---|---|
-| **Integer** | Signed 32-bit. Arithmetic wraps on overflow (two's complement). |
-| **Array** | Globally declared, fixed-size, mutable sequence of integers. |
+| **int** | Signed 32‑bit integer. Arithmetic wraps on overflow (two's complement). All numeric literals, global variables holding integers, and function parameters receiving integers are of this kind. |
+| **arr_ref** | Array reference — a runtime value that points to either a mutable global array in the array pool, or a read‑only array literal table entry. An `arr_ref` may be stored in a variable, passed as a function argument, or used with `[]` and `.length`. |
 
-There is no boolean type. Integers are used for truthiness: `0` is falsy, all other integers are truthy. String literals are not a runtime type — they are compile-time syntax that produces a read-only array of char codes (see §2.8).
+There is **no boolean type**. Integers are used for truthiness: `0` is falsy, all other integers are truthy. Strings are not a runtime type; they are compile‑time syntax that produces read‑only arrays of char codes, whose references are of kind `arr_ref`.
+
+Each **global variable** holds a value of exactly one kind: `int` or `arr_ref`. The compiler infers the kind from the first assignment or declaration, and the kind cannot change later.
 
 ### 2.4 Integer Semantics
 
@@ -127,14 +129,30 @@ From highest to lowest:
 ### 2.6 Variables
 
 - All variables are global.
-- A variable is created on its first assignment.
+- A variable is created on its first assignment. Its **value kind** (`int` or `arr_ref`) is inferred from the right‑hand side of that assignment:
+  - `foo = 42` → `foo` is an `int` variable.
+  - `foo = "hello"` → `foo` is an `arr_ref` variable referencing the interned `"hello"` literal array.
+  - `foo[16]` at top level → `foo` is an `arr_ref` variable referencing the mutable array of size 16.
+
+- Once a variable’s kind is established, it cannot change. Mixed re‑declarations, such as:
+
+```
+foo = 42
+foo = "world"
+```
+
+are **compile‑time errors** ("cannot change value‑kind of variable").
 - All uninitialised variables default to `0`.
 - Variable names: ASCII letters, digits, and `_`; must start with a letter or `_`.
 - Maximum of **64 simultaneous global variables** per cart.
+- Assignment operators: `=` `+=` `-=` `*=` `/=` `%=` apply only to `int` variables. Using any of these on an `arr_ref` variable is a compile‑time error.
+- Increment/decrement: `++` `--` (statement form, both prefix and postfix) apply only to `int` variables.
+- A variable of kind `arr_ref` may be used with:
+  - Array indexing: `foo[i]` reads/writes the array it references.
+  - The `.length` property: `foo.length` returns the declared size of that array.
+- A variable of kind `int` may be used in any integer expression, comparison, or arithmetic operator.
 
-Assignment operators: `=` `+=` `-=` `*=` `/=` `%=`
-
-Increment/decrement: `++` `--` (statement form only; both prefix `++i` and postfix `i++` are equivalent and do not return a value)
+Array‑references are first‑class values but are not integers; you cannot add, subtract, or compare them directly as numbers. The only operations on `arr_ref` are those defined by the language (indexing, length, and uses required by built‑ins such as `print` and `streq`).
 
 ### 2.7 Control Flow
 
@@ -165,66 +183,69 @@ for (i = 0; i < 10; i++) {
 
 `return <expr>` is only valid inside `audio(t)`. It evaluates the expression and immediately returns it as the sample value. Using `return` outside `audio(t)` is a **compile error**. Falling off the end of `audio(t)` without a `return` implicitly returns `128` (mid-point / silence).
 
-### 2.8 Arrays
+## 2.8 Arrays
 
-Arrays are globally scoped and fixed-size. All array storage is statically allocated — no dynamic allocation occurs at runtime.
+Arrays are globally declared, fixed‑size, mutable sequences of integers, or read‑only sequences derived from string literals. An **array reference** (`arr_ref`) is a runtime value that points to such an array, and may be stored in a global variable, passed as a function argument, or used with `[]` and `.length`.
 
-#### Declaration
+### Declaration
 
 A global array is declared by naming it with a size at the top level of the program (not inside a block):
 
-```
-buf[32]
-```
-
-This creates a global array `buf` with 32 integer elements, all initialised to `0`. A name may only be declared once.
-
-🔲 _Fixed limits (max array count, max size per array, total element pool) are TBD and will be defined as named constants._
-
-#### Indexing
-
-Elements are read and written with bracket syntax:
-
-```
-buf[0] = 65      // write
-x = buf[i]       // read
-buf[i] += 1      // compound assignment
+```c
+buf[1]
 ```
 
-Out-of-bounds reads return `0`. Out-of-bounds writes are silently ignored.
+This creates a mutable array `buf` of 32 integer elements, all initialised to `0`, and the global variable `buf` is of kind `arr_ref` (array reference). A name may only be declared once. A declaration that is later assigned an integer value, or vice versa, is a **compile‑time error** (“cannot change value‑kind of variable”).
 
-#### Length
+Fixed limits (max array count, max size per array, total element pool) are defined in §6.3.
+
+### Indexing and `.length`
+
+Elements are read and written with bracket syntax on an `arr_ref`‑valued variable:
+
+```c
+buf = 65      // write to mutable array
+x = buf[i]       // read from mutable array
+buf[i] += 1      // compound assignment on mutable array
+```
+
+Out‑of‑bounds reads return `0`. Out‑of‑bounds writes are silently ignored.
 
 The `.length` property returns the declared size of the array as an integer:
 
-```
+```c
 n = buf.length   // n == 32
 ```
 
-#### String Literals
+`.length` is only allowed on variables of kind `arr_ref`; using it on an `int` variable is a **compile‑time error**.
 
-A string literal is compile-time syntax that defines a read-only array of char codes, null-terminated (the final element is always `0`). String literals may appear wherever an array reference is expected, most notably as an argument to `print`:
+### String Literals and `arr_ref`
 
+A string literal is compile‑time syntax that defines a read‑only array of char codes, null‑terminated (the final element is always `0`). The compiler interns all unique string literals into the array literal table.
+
+An array reference to a literal may appear wherever an array reference is expected:
+
+```c
+foo = "hello"        // foo is an arr_ref pointing to the "hello" literal array
+print(foo, 0, 0, 1)
 ```
-print("hello", 0, 0, 1)
-```
 
-The compiler interns all unique string literals into an array literal table embedded in the compiled binary. Each literal is accessible as a read-only array reference at runtime. Element assignment to a literal array reference is a silent no-op.
+Element assignment to a literal array reference (via `[]`) is a **silent no‑op**.
 
-Escape sequences: `\\` — literal backslash; `\"` — literal double quote. ASCII characters only (codes 32–127); non-ASCII source characters are a compile error.
+Escape sequences: `\\` — literal backslash; `\"` — literal double quote. Only printable ASCII characters (codes 32–127) are allowed. Non‑ASCII source characters are a **compile‑time error**.
 
-🔲 _Maximum literal length is TBD._
+Maximum literal length (excluding the null‑terminator) is defined in §6.3.
 
-#### Char Literals
+### Char Literals
 
-A single-character literal evaluates to the ASCII code of the character as an integer. This is purely compile-time syntactic sugar:
+A single‑character literal evaluates to the ASCII code of the character as an integer. This is purely compile‑time syntactic sugar:
 
-```
-buf[0] = 'A'            // equivalent to buf[0] = 65
+```c
+buf = 'A'            // equivalent to buf = 65
 if (buf[i] == 'a') { }
 ```
 
-Only printable ASCII characters (codes 32–127) are valid. The only escape sequences are `'\\'` (backslash, code 92) and `'\''` (single quote, code 39).
+Char literals may only appear in integer‑expression contexts; they may not be stored into an `arr_ref` variable.
 
 ### 2.9 Comments
 
@@ -257,21 +278,13 @@ fn ident('(' param_list ')') block
 - `fn`‑functions may return an integer via `return <expr>`; falling off the end implicitly returns `0`.
 - `fn`‑functions may call built‑in functions and other `fn`‑functions.
 
-User‑defined functions may not be recursive beyond the call‑stack limit (see §5. Runtime). Using `fn` is optional; carts that do not declare any `fn`‑functions are compatible with v1 runtimes.
+User‑defined functions may not be recursive beyond the call‑stack limit (see §5. Runtime).
 
 ---
 
 ## 3. API Reference
 
-### 3.1 Conventions
-
-- `c` is a colour value: `0` = black (off), any non-zero value = white (on). The canonical white value is `1`.
-- `x`, `y` are pixel coordinates. Origin is the **top-left corner** of the screen. X increases rightward, Y increases downward.
-- Screen bounds: `x` ∈ [0, 127], `y` ∈ [0, 63].
-- Drawing outside screen bounds is silently ignored (clipped).
-- All arguments are integers unless otherwise noted.
-
-### 3.2 Input
+### 3.1 Input
 
 ```
 btn(i)   → integer
@@ -294,40 +307,63 @@ Returns `1` if button `i` was pressed on this frame (edge trigger, not held), `0
 | 4 | A |
 | 5 | B |
 
-### 3.3 Graphics
+### 3.2 Graphics
+
+#### Conventions
+
+- `c` is a colour value: `0` = black (off), any non‑zero value = white (on). The canonical white value is `1`.
+- `x`, `y` are pixel coordinates. Origin is the **top‑left corner** of the screen. X increases rightward, Y increases downward.
+- Screen bounds: `x` ∈ [0, 127], `y` ∈ [0, 63].
+- Drawing outside screen bounds is silently ignored (clipped).
+- All arguments are integers unless otherwise noted.
+
+#### cls
 
 ```
 cls(c)
 ```
 Clear the entire screen to colour `c`.
 
+#### pset
+
 ```
 pset(x, y, c)
 ```
 Set the pixel at `(x, y)` to colour `c`.
+
+#### rectfill
 
 ```
 rectfill(x, y, w, h, c)
 ```
 Draw a filled rectangle. `(x, y)` is the top-left corner; `w` and `h` are width and height in pixels.
 
+#### line
+
 ```
 line(x0, y0, x1, y1, c)
 ```
 Draw a line from `(x0, y0)` to `(x1, y1)` using Bresenham's line algorithm. Both endpoints are included.
 
+#### print
+
 ```
 print(text, x, y, c)
 ```
-Render `text` starting at pixel `(x, y)` in colour `c` on a single line (no text wrap and no line breaks).
 
-- If `text` is an integer, it is converted to its decimal representation before rendering.
-- If `text` is an array reference (including an inline string literal), elements are interpreted as char codes and rendered until a `0` (null terminator) is encountered or the end of the array is reached.
+- If `text` is an **integer** (kind `int`), it is converted to its decimal representation before rendering.
+- If `text` is an **array reference** (kind `arr_ref`), its elements are interpreted as char codes and rendered until a `0` (null terminator) is encountered or the end of the array is reached.  
+  This applies both to:
+    - mutable arrays (e.g., `name`),
+    - and read‑only string literals (e.g., `"hello"`).
 
-- Font: **Monogram** by Datagoblin. Each character occupies a **6 px** horizontal cell (5 px glyph + 1 px gap); the full character height is **9 px** (5 px body + 2 px ascender zone + 2 px descender zone). A string of _n_ characters therefore renders into _n_ × 6 pixels wide. Full ASCII printable range (codes 32–126) supported.
-- Characters rendered outside screen bounds are silently clipped.
+In both cases, `print` renders the string on a single line, with no text wrap or line breaks.
 
-### 3.4 Math Utilities
+Font: **Monogram** by Datagoblin. Each character occupies a **6 px** horizontal cell (5 px glyph + 1 px gap); the full character height is **9 px** (5 px body + 2 px ascender zone + 2 px descender zone). A string of _n_ characters therefore renders into _n_ × 6 pixels wide. Full ASCII printable range (codes 32–126) supported.
+
+Characters rendered outside screen bounds are silently clipped.
+
+### 3.3 Math Utilities
 
 ```
 abs(x)         → integer   // absolute value
@@ -339,11 +375,11 @@ seed(n)          → void      // sets random seed
 rnd(n)           → integer   // random integer in [0, n−1]
 ```
 
-### 3.5 Audio Utilities
+### 3.4 Audio Utilities
 
 No dedicated audio built-ins are planned for v1. Audio synthesis is expected to be done using integer math directly inside `audio(t)`. The math utility functions (`abs`, `min`, `max`, etc.) are available inside `audio(t)`.
 
-### 3.6 Persistence
+### 3.5 Persistence
 
 Each cart has a dedicated save block of **4 × 32-bit integer slots**, persisted to flash
 and identified by the cart's `@id` metadata field.
@@ -420,7 +456,7 @@ There is no `delete` operation in v1. Once a save entry is allocated for a given
 it persists until the save page is manually erased (e.g. by a firmware-level reset
 utility). Future versions may introduce an explicit `clearsave()` built-in.
 
-### 3.7 Cart utilities
+### 3.6 Cart utilities
 
 Cart Utilities allow to inspect and load available cart files. This allows multi-cart programs or cart loaders. The default cart loader is built with this API.
 
@@ -434,7 +470,7 @@ loadcart(i)              // if cart at index exists, exit current cart and load 
 
 `field` is an array reference (typically an inline string literal) naming the metadata key. The value is written into `arr` as null-terminated char codes; `arr` must be large enough to hold the result.
 
-### 3.8 Array Comparison
+### 3.7 Array Comparison
 
 ```
 streq(a, b)        → integer
