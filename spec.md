@@ -117,7 +117,11 @@ The compiler assigns a fixed kind to each variable and parameter at compile time
 - Arithmetic is 32-bit signed with wraparound on overflow.
 - Division is integer division, truncating toward zero.
 - Division by zero returns `0`.
-
+- The % operator follows the identity:
+```
+a == (a / b) * b + (a % b)
+```
+where division truncates toward zero.
 ### 2.5 Operator Precedence
 
 From highest to lowest:
@@ -397,7 +401,8 @@ print(text, x, y, c)
 `print(text, x, y, c)` accepts either an `int` or an `arr_ref` as `text`.
 
 - If `text` is an `int`, it is converted to decimal digits before rendering.
-- If `text` is an `arr_ref`, its elements are interpreted as char codes and rendered until a `0` (null terminator) is encountered or the end of the array is reached.
+- If `text` is an `arr_ref`, its elements are interpreted as char codes. Rendering stops at the first `0` element or after
+  `.length` elements, whichever comes first.
 
 Passing an `int` where an `arr_ref` is required, or an `arr_ref` where an `int` is required, is a **compile-time error** if the kinds are incompatible. `print` itself accepts either kind for its first argument, so both are valid for `text`.
 
@@ -418,6 +423,8 @@ clamp(x, lo, hi) → integer   // clamp x between lo and hi (included)
 seed(n)          → void      // sets random seed
 rnd(n)           → integer   // random integer in [0, n−1]
 ```
+
+The runtime must initialise the random seed to a fixed constant at cart start.
 
 ### 3.4 Audio Utilities
 
@@ -494,6 +501,8 @@ iterations) over the save page:
 
 Power loss between a `save()` call and a flush will result in the last unsaved values
 being lost. This is acceptable for v1.
+
+The runtime does not implement wear leveling. Carts should avoid calling `save()` excessively.
 
 **Entry lifecycle:**
 
@@ -654,7 +663,7 @@ The VM is a **stack-based interpreter**. Instructions use variable-width encodin
 | `SUB` | `0x11` | — | Push `a - b` |
 | `MUL` | `0x12` | — | Push `a * b` |
 | `DIV` | `0x13` | — | Push `a / b`; push `0` if `b == 0` |
-| `MOD` | `0x14` | — | Push `a % b`; push `0` if `b == 0` |
+| `MOD` | `0x14` | — | Push `a == (a / b) * b + (a % b)` |
 | `NEG` | `0x15` | — | Pop a; push `-a` |
 | `BAND` | `0x20` | — | Push `a & b` |
 | `BOR` | `0x21` | — | Push `a \| b` |
@@ -833,6 +842,8 @@ The runtime targets **30 frames per second**. Each frame:
 
 Example: `input & 1` tests Left; `input & 16` tests A. `btn()` and `btnp()` remain available as a convenience API on top of this bitfield.
 
+`btn(i)` and `btnp(i)` reflect the same input state used to construct the `input` bitfield for the current frame.
+
 **Overrun behaviour:** If `update()` + `draw()` + display flush take longer than one frame period (33 ms), the next frame starts immediately with no delay. No frames are dropped and `draw()` is never skipped. Under sustained overrun, the effective frame rate falls below 30 fps.
 
 ### 5.3 Audio Callback
@@ -843,9 +854,20 @@ Example: `input & 1` tests Left; `input & 16` tests A. `btn()` and `btnp()` rema
   (i.e. after `init()` completes) and incremented once per output sample, as a 32-bit signed integer.
   Wraps from 2³¹−1 back to −2³¹ (~74.6 hours of audio at 8 kHz).
 - The return value of `audio(t)` is the output sample interpreted as an **unsigned 8-bit integer in the range [0, 255]**.
-  The returned integer is truncated to 8 bits: `output = return_value & 255`.
+  The runtime **must** compute the output sample as:
+
+```
+output = return_value & 255
+```
+
+before sending it to the audio device.
+
+- The value `0` corresponds to minimum output, `255` to maximum output, and `128` to the midpoint (silence).
 - `audio(t)` may call math utility functions (`abs`, `min`, `max`, etc.) but may not call any graphics, input, or persistence built-ins.
-- `audio(t)` must not write to any global variable. This constraint is enforced at compile time.
+- `audio(t)` must not perform any write to global state, including:
+  - assignment to variables;
+  - writes to array elements.  
+  Any such usage is a compile-time error
 
 **Global variable access — shadow copy:**
 
@@ -972,7 +994,8 @@ A variable of kind `arr_ref` may point to either backing store (mutable pool or 
 | Max mutable array declarations per cart | **16** |
 | Max elements per mutable array | **256** |
 
-Arrays are **not** included in the variable table shadow copies (§6.2). Array data is shared between core 0 and core 1 without synchronisation. Carts must avoid writing to arrays from `audio(t)` to prevent torn reads.
+Arrays are **not** included in the variable table shadow copies (§6.2). Array data is shared between core 0 and core 1
+without synchronisation. Array writes are forbidden in `audio(t)`.
 
 ### 6.4 Evaluation Stack
 
