@@ -35,7 +35,7 @@ draw(frame) {
         }
     }
 
-    if (frame > 40) print("01", 90, 46, 1)
+    if (frame > 52) print("01", 90, 46, 1)
 }
 
 update(frame) {
@@ -50,7 +50,7 @@ update(frame) {
 }
 
 audio(t) {
-    if (t >= 16000) return 0
+    if (t >= 16000) return 128
 
     return (4 * t * (arr[t >> 11] & 15)) | t>>3 | t >> (t>>10)
 }

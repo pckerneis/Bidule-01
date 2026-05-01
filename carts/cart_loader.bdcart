@@ -34,7 +34,7 @@ draw(frame) {
     n = cartcount()
 
     rectfill(0, 0, 128, 11, 1)
-    print("CARTS", 2, 1, 0)
+    print("CARTS", 2, 2, 0)
 
     if (n == 0) {
         print("No carts found.", 2, 24, 1)
