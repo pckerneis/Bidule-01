@@ -4,8 +4,8 @@
 > This document is the authoritative specification for the Bidule 01 platform.
 > Sections marked 🔲 are placeholders pending design decisions.
 
-**Spec version:** 0.3  
-**Last updated:** 2026-04-28
+**Spec version:** 0.4  
+**Last updated:** 2026-05-01
 
 ---
 
@@ -30,7 +30,7 @@
 | **Firmware** | The software flashed to the Raspberry Pi Pico that implements the runtime |
 | **Emulator** | Any runtime implementation not running on the reference hardware |
 | **Frame** | One execution cycle of `update()` and `draw()`, targeting 30 per second |
-| **t** | The absolute audio sample index passed to `audio(t)`, incrementing at 8000 Hz |
+| **t** | The absolute audio sample index since the current cart started, reset to 0 when the cart begins execution and incremented once per output sample at 8000 Hz |
 
 ---
 
@@ -89,16 +89,17 @@ entry points by the runtime.
 
 ### 2.3 Types
 
-The language has two **value kinds**:
+The language has two value kinds: `int` and `arr_ref`.
 
-| Type | Description |
-|---|---|
-| **int** | Signed 32‑bit integer. Arithmetic wraps on overflow (two's complement). All numeric literals, global variables holding integers, and function parameters receiving integers are of this kind. |
-| **arr_ref** | Array reference — a runtime value that points to either a mutable global array in the array pool, or a read‑only array literal table entry. An `arr_ref` may be stored in a variable, passed as a function argument, or used with `[]` and `.length`. |
+`int` is a signed 32-bit integer with wraparound semantics.
 
-There is **no boolean type**. Integers are used for truthiness: `0` is falsy, all other integers are truthy. Strings are not a runtime type; they are compile‑time syntax that produces read‑only arrays of char codes, whose references are of kind `arr_ref`.
+`arr_ref` is a reference to either a mutable array in the array pool or a read-only array literal.
 
-Each **global variable** holds a value of exactly one kind: `int` or `arr_ref`. The compiler infers the kind from the first assignment or declaration, and the kind cannot change later.
+There is no boolean type; integers are used for truthiness, where `0` is false and any other value is true.
+
+String literals are compile-time syntax that produce read-only arrays of char codes, and variables that hold them are of kind `arr_ref`.
+
+The compiler assigns a fixed kind to each variable and parameter at compile time. A value kind cannot change after it has been established.
 
 ### 2.4 Integer Semantics
 
@@ -129,10 +130,11 @@ From highest to lowest:
 ### 2.6 Variables
 
 - All variables are global.
-- A variable is created on its first assignment. Its **value kind** (`int` or `arr_ref`) is inferred from the right‑hand side of that assignment:
-  - `foo = 42` → `foo` is an `int` variable.
-  - `foo = "hello"` → `foo` is an `arr_ref` variable referencing the interned `"hello"` literal array.
-  - `foo[16]` at top level → `foo` is an `arr_ref` variable referencing the mutable array of size 16.
+- A variable is created on its first assignment.
+- Its **value kind** (`int` or `arr_ref`) is inferred from the right‑hand side:
+  - `foo = 42` creates an `int` variable.
+  - `foo = "hello"` creates an `arr_ref` variable referencing the interned `"hello"` literal array.
+  - `foo[16]` at top level creates an `arr_ref` variable referencing the mutable array of size 16.
 
 - Once a variable’s kind is established, it cannot change. Mixed re‑declarations, such as:
 
@@ -142,15 +144,17 @@ foo = "world"
 ```
 
 are **compile‑time errors** ("cannot change value‑kind of variable").
+- Assigning between two variables of the same kind copies the value. For `arr_ref`, this copies the reference, not the underlying array contents.
 - All uninitialised variables default to `0`.
 - Variable names: ASCII letters, digits, and `_`; must start with a letter or `_`.
 - Maximum of **64 simultaneous global variables** per cart.
-- Assignment operators: `=` `+=` `-=` `*=` `/=` `%=` apply only to `int` variables. Using any of these on an `arr_ref` variable is a compile‑time error.
-- Increment/decrement: `++` `--` (statement form, both prefix and postfix) apply only to `int` variables.
+- Assignment operators `=` `+=` `-=` `*=` `/=` `%=` apply only to `int` variables. Using any of these on an `arr_ref` variable is a compile‑time error.
+- Increment/decrement `++` `--` (statement form, both prefix and postfix) apply only to `int` variables.
 - A variable of kind `arr_ref` may be used with:
   - Array indexing: `foo[i]` reads/writes the array it references.
   - The `.length` property: `foo.length` returns the declared size of that array.
 - A variable of kind `int` may be used in any integer expression, comparison, or arithmetic operator.
+- Comparing `arr_ref` values is only allowed if the comparison is by reference identity; otherwise it is a compile-time error.
 
 Array‑references are first‑class values but are not integers; you cannot add, subtract, or compare them directly as numbers. The only operations on `arr_ref` are those defined by the language (indexing, length, and uses required by built‑ins such as `print` and `streq`).
 
@@ -185,17 +189,19 @@ for (i = 0; i < 10; i++) {
 
 ## 2.8 Arrays
 
-Arrays are globally declared, fixed‑size, mutable sequences of integers, or read‑only sequences derived from string literals. An **array reference** (`arr_ref`) is a runtime value that points to such an array, and may be stored in a global variable, passed as a function argument, or used with `[]` and `.length`.
+Arrays are globally declared, fixed‑size sequences of integers. A global array declaration binds the declared name to an `arr_ref`. `arr_ref` values may be stored in variables, passed to functions, and used with `[]` and `.length`.
 
 ### Declaration
 
 A global array is declared by naming it with a size at the top level of the program (not inside a block):
 
 ```c
-buf[1]
+buf[32]
 ```
 
-This creates a mutable array `buf` of 32 integer elements, all initialised to `0`, and the global variable `buf` is of kind `arr_ref` (array reference). A name may only be declared once. A declaration that is later assigned an integer value, or vice versa, is a **compile‑time error** (“cannot change value‑kind of variable”).
+`buf[32]` declares a mutable array of 32 integers and creates an `arr_ref` variable named `buf`. All elements are initialised to `0` at cart load time. A name may only be declared once. A declaration that is later assigned an integer value, or vice versa, is a **compile‑time error** (“cannot change value‑kind of variable”).
+
+`foo = “hello”` binds `foo` to a read-only array reference pointing to the interned `”hello”` literal.
 
 Fixed limits (max array count, max size per array, total element pool) are defined in §6.3.
 
@@ -204,7 +210,7 @@ Fixed limits (max array count, max size per array, total element pool) are defin
 Elements are read and written with bracket syntax on an `arr_ref`‑valued variable:
 
 ```c
-buf = 65      // write to mutable array
+buf[0] = 65      // write to mutable array
 x = buf[i]       // read from mutable array
 buf[i] += 1      // compound assignment on mutable array
 ```
@@ -264,6 +270,8 @@ audio(t)
 
 See [Section 5 — Runtime Specification](#5-runtime--firmware-specification) for calling semantics.
 
+Lifecycle hooks use the same value-kind rules as user-defined functions: parameters are fixed at compile time, and arguments may be either `int` or `arr_ref` depending on the declared and inferred kind of each parameter.
+
 ## 2.11 User‑defined functions
 
 The language supports `fn` functions for code reuse. The syntax is:
@@ -272,10 +280,10 @@ The language supports `fn` functions for code reuse. The syntax is:
 fn ident('(' param_list ')') block
 ```
 
-
 - `param_list` is `(IDENT (',' IDENT)*)?`.
-- All parameters are bound to scalar slots at compile time and behave like global variables inside the function.
-- `fn`‑functions may return an integer via `return <expr>`; falling off the end implicitly returns `0`.
+- Parameters are compile-time bound to variable slots; each parameter has a fixed value kind inferred from its usage or declaration context.
+- A function may accept both `arr_ref` and `int` parameters. The compiler rejects calls where an argument kind does not match the parameter kind.
+- `fn`‑functions return an `int` via `return <expr>`; falling off the end implicitly returns `0`. Returning an `arr_ref` from a user-defined function is not supported in v1.
 - `fn`‑functions may call built‑in functions and other `fn`‑functions.
 
 User‑defined functions may not be recursive beyond the call‑stack limit (see §5. Runtime).
@@ -351,13 +359,14 @@ Draw a line from `(x0, y0)` to `(x1, y1)` using Bresenham's line algorithm. Both
 print(text, x, y, c)
 ```
 
-- If `text` is an **integer** (kind `int`), it is converted to its decimal representation before rendering.
-- If `text` is an **array reference** (kind `arr_ref`), its elements are interpreted as char codes and rendered until a `0` (null terminator) is encountered or the end of the array is reached.  
-  This applies both to:
-    - mutable arrays (e.g., `name`),
-    - and read‑only string literals (e.g., `"hello"`).
+`print(text, x, y, c)` accepts either an `int` or an `arr_ref` as `text`.
 
-In both cases, `print` renders the string on a single line, with no text wrap or line breaks.
+- If `text` is an `int`, it is converted to decimal digits before rendering.
+- If `text` is an `arr_ref`, its elements are interpreted as char codes and rendered until a `0` (null terminator) is encountered or the end of the array is reached.
+
+Passing an `int` where an `arr_ref` is required, or an `arr_ref` where an `int` is required, is a **compile-time error** if the kinds are incompatible. `print` itself accepts either kind for its first argument, so both are valid for `text`.
+
+`print` renders on a single line, with no text wrap or line breaks.
 
 Font: **Monogram** by Datagoblin. Each character occupies a **6 px** horizontal cell (5 px glyph + 1 px gap); the full character height is **9 px** (5 px body + 2 px ascender zone + 2 px descender zone). A string of _n_ characters therefore renders into _n_ × 6 pixels wide. Full ASCII printable range (codes 32–126) supported.
 
@@ -468,7 +477,7 @@ cartmeta(i, field, arr)  // fills arr with the value of the requested metadata f
 loadcart(i)              // if cart at index exists, exit current cart and load the requested cart; returns 0 otherwise
 ```
 
-`field` is an array reference (typically an inline string literal) naming the metadata key. The value is written into `arr` as null-terminated char codes; `arr` must be large enough to hold the result.
+`field` must be an `arr_ref` containing the metadata key as a null-terminated string. `arr` must be an `arr_ref` pointing to a writable destination buffer large enough to hold the result. Passing a read-only string literal as `arr` is a **compile-time error** because `cartmeta` writes into the destination buffer.
 
 ### 3.7 Array Comparison
 
@@ -482,6 +491,8 @@ arreq(a, b, len)   → integer
 `arreq(a, b, len)` compares exactly `len` elements of `a` and `b`. Returns `1` if all `len` elements are equal, `0` otherwise. A `len` of `0` always returns `1`.
 
 Both functions are primarily intended for comparing char-code arrays (e.g. the result of `cartmeta()` against a string literal).
+
+`streq(a, b)` and `arreq(a, b, len)` compare array **contents**, not array identity. Both arguments must be `arr_ref` values. Comparing `arr_ref` values with `==` or `!=` tests reference identity only, not element equality; using `==`/`!=` between two `arr_ref` values is a **compile-time error** unless reference identity comparison is explicitly intended and defined.
 
 ---
 
@@ -554,7 +565,7 @@ Unknown `@keys` are ignored by the runtime.
 
 ### 4.6 Compiled Cart Format
 
-The compiled format is a binary file produced by the reference compiler from a source cart.
+The compiled format is a binary file produced by the reference compiler from a source cart. It stores only compile-time-resolved indices and bytecode. Variable kinds (`int` vs `arr_ref`) are enforced by the compiler and do not require dedicated runtime tags unless an implementation chooses to add them.
 
 **File extension:** `.bdb`
 
@@ -569,9 +580,9 @@ All multi-byte integers are little-endian.
 | 5 | 1 B | Flags: `0` (reserved) |
 | 6 | 2 B | Metadata block length _N_ |
 | 8 | _N_ B | Metadata block (raw text, ignored by runtime) |
-| 8+_N_ | 1 B | Array literal count (0–🔲) |
+| 8+_N_ | 1 B | Array literal count (0–max per §6.3) |
 | … | … | Array literal table: for each entry: `[len: u8][elements: len bytes]` (char codes; null-terminated; last byte is always `0`) |
-| … | 1 B | Array declaration count (0–🔲) |
+| … | 1 B | Array declaration count (0–max per §6.3) |
 | … | … | Array declaration table: for each entry: `[size: u16 LE]` — declared element count of each mutable array, in declaration order |
 | … | 2 B | `init_off` — bytecode offset of `init()` body (`0xFFFF` = not defined) |
 | … | 2 B | `update_off` |
@@ -773,14 +784,14 @@ Example: `input & 1` tests Left; `input & 16` tests A. `btn()` and `btnp()` rema
 
 `audio(t)` is called by the audio subsystem running on **core 1**, 8000 times per second (8 kHz sample rate).
 
-- `t` is the **absolute sample index** since the start of the current cart (reset to 0 after `init()` completes, including on cart switch), as a 32-bit signed integer. Wraps from 2³¹−1 back to −2³¹ (~74.6 hours of audio at 8 kHz).
+- `t` is the **absolute sample index** since the current cart started, reset to `0` when the cart begins execution (i.e. after `init()` completes) and incremented once per output sample, as a 32-bit signed integer. Wraps from 2³¹−1 back to −2³¹ (~74.6 hours of audio at 8 kHz).
 - The return value of `audio(t)` a the output sample interpreted as an **unsigned 8-bit integer in the range [0, 255]**. Only the least significant 8 bits are used; higher bits are discarded.
 - `audio(t)` may call math utility functions (`abs`, `min`, `max`, etc.) but may not call any graphics, input, or persistence built-ins.
 - `audio(t)` must not write to any global variable. This constraint is enforced at compile time.
 
 **Global variable access — shadow copy:**
 
-`audio(t)` reads cart globals from a **shadow copy** of the live variable table, not the live table itself. This gives audio a fully consistent end-of-frame snapshot with no risk of torn reads.
+`audio(t)` reads the current global variable table from a **shadow copy** of the live variable table, not the live table itself. Each slot stores the 32-bit value of the corresponding variable, which may represent either an `int` or an `arr_ref` according to the compiler's static kind tracking. The runtime does not need to interpret kinds at this stage.
 
 - The runtime maintains **two shadow buffers** (A and B), each 256 bytes (64 variables × 4 bytes).
 - After each `draw()` call completes, the runtime writes the current live variable table into the inactive buffer, then atomically flips the active buffer index.
@@ -802,7 +813,7 @@ A cart may call `loadcart(i)` at any point during `update()` to request a switch
 
 1. The current cart's execution stops (remaining `update()` body is aborted).
 2. The new cart binary is loaded and validated. If validation fails, the current cart continues running unchanged; `loadcart()` returns `0`.
-3. The global variable table is re-initialised (all variables reset to `0`).
+3. The global variable table is re-initialised (all variables reset to `0`). Any `arr_ref`-typed bindings are reinitialized along with the rest of the cart state.
 4. `init()` is called for the new cart, if defined.
 5. The `t` counter is reset to `0`.
 6. The `frame` counter is reset to `0`.
@@ -842,6 +853,8 @@ A web or desktop emulator implements the same cart/runtime contract without the 
 
 **Audio shadow copy:** The shadow-copy mechanism (§5.3) is not needed in a single-threaded emulator. The worklet may read cart globals directly, accepting the risk of occasional torn reads (acceptable given the low stakes in an emulator context).
 
+**Static kind rules:** Emulator implementations should preserve the same static kind rules as the reference compiler, even if their internal runtime representation uses richer host-language objects.
+
 ---
 
 ## 6. Memory Layout
@@ -868,15 +881,17 @@ Total consumed ≈ ~122 KB, leaving ~142 KB free.
 
 ### 6.2 Variable Table
 
-Maximum **64 global integer variables** per cart. Variable names are resolved to slot indices (0–63) at compile time and are not stored at runtime. Each slot holds a 4-byte signed 32-bit integer. No type tags are needed: the compiler statically distinguishes integer variables from array declarations, and array data is stored separately in the array pool (§6.3). Three copies of the table exist in memory at all times: the live table (core 0) and two shadow copies for lock-free audio reads (see §5.3).
+Maximum **64 global variables** per cart. Each variable occupies one 32-bit slot in the global variable table. Slots may hold either integer values or encoded array references, depending on the compiler-assigned kind. The runtime does not need to distinguish these at storage time unless an implementation chooses to use tagged values. Variable names are resolved to slot indices (0–63) at compile time and are not stored at runtime. Three copies of the table exist in memory at all times: the live table (core 0) and two shadow copies for lock-free audio reads (see §5.3).
 
 ### 6.3 Array Storage
 
 All arrays are globally declared and statically sized. The runtime maintains two array regions:
 
-**Array literal table (read-only):** All unique string literals in a cart are known at compile time. The compiler collects them and embeds them as a read-only table in the compiled binary. Each entry is a null-terminated sequence of char codes. At runtime these are accessible as read-only array references; element assignment to a literal is a silent no-op.
+**Array literal table (read-only):** All unique string literals in a cart are known at compile time. The compiler collects them and embeds them as a read-only table in the compiled binary. Each entry is a null-terminated sequence of char codes. At runtime these are accessible as read-only array references; element assignment to a literal is a silent no-op. Array references are not copied into the array pool; only the backing arrays are stored there.
 
-**Global array pool (mutable):** Arrays declared with `name[N]` syntax are allocated in declaration order from a flat mutable pool. All elements are initialised to `0` at cart load time. The pool is a contiguous block of integer storage subdivided at compile time — no dynamic allocation occurs.
+**Global array pool (mutable):** The array pool stores the backing data for mutable arrays declared with `name[N]` syntax, allocated in declaration order from a flat pool. All elements are initialised to `0` at cart load time. The pool is a contiguous block of integer storage subdivided at compile time — no dynamic allocation occurs.
+
+A variable of kind `arr_ref` may point to either backing store (mutable pool or literal table).
 
 **Fixed limits:**
 
