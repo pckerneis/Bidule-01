@@ -261,11 +261,15 @@ n = buf.length   // n == 32
 
 String literals are compile-time syntax producing null-terminated sequences of char codes (the final element is always `0`). There is no literal pool; no interning or deduplication occurs.
 
-**Temporary literal (expression context):** A string literal used directly in an expression produces a temporary `arr_ref` valid only for the lifetime of that expression. The literal data is embedded inline in the bytecode. Writing to a temporary literal via `[]` is a **compile-time error**.
+**Temporary literal (expression context):** A string literal used directly in an expression produces a temporary `arr_ref` valid only for the lifetime of that expression. The literal data is embedded inline in the bytecode. Writing to a temporary literal via `[]` is a **compile-time error**. Passing a temporary literal to a **writable** `arr_ref` parameter is also a **compile-time error** (see below).
 
 ```c
-print("hello", 0, 0, 1)   // temporary arr_ref, valid during the call
+print("hello", 0, 0, 1)   // ok — print's text parameter is read-only
+streq("hi", name)          // ok — streq's parameters are read-only
+cartmeta(0, "title", "x") // compile-time error — third parameter is writable
 ```
+
+**Writable arr_ref parameters:** A function parameter of kind `arr_ref` is considered *writable* if the compiler detects any write through it — via element assignment (`param[i] = …`, `param[i] += …`, etc.) in the function body, or by passing it to a writable parameter of a built-in or another `fn` function. Built-in functions document which of their `arr_ref` parameters are writable. Passing a temporary literal as a writable `arr_ref` argument is a **compile-time error**. Passing a temporary literal to a read-only `arr_ref` parameter is allowed.
 
 **Mutable array from literal (declaration):** A top-level declaration of the form `foo = "hello"` allocates a new mutable array in the global array pool, initialised with the char codes of `"hello"` (null-terminated). The variable `foo` is of kind `arr_ref` and may be indexed and written like any mutable array.
 
@@ -326,6 +330,7 @@ fn IDENT '(' param_list ')' block
 - Explicit annotation and inference may be mixed within the same parameter list.
 - Parameters are compile-time bound to variable slots; a parameter's kind cannot change after it is established.
 - A function may accept both `arr_ref` and `int` parameters. The compiler rejects calls where an argument kind does not match the parameter kind.
+- An `arr_ref` parameter is considered **writable** if the compiler finds any write through it in the function body (element assignment, compound element assignment, or passing it to a writable built-in or `fn` parameter). Passing a temporary literal to a writable `arr_ref` parameter is a **compile-time error** (see §2.8).
 - `fn`‑functions return an `int` via `return <expr>`; falling off the end implicitly returns `0`. Returning an `arr_ref` from a user-defined function is not supported in v1.
 - `fn`‑functions may call built‑in functions and other `fn`‑functions.
 
@@ -527,7 +532,7 @@ cartmeta(i, field, arr)  // fills arr with the value of the requested metadata f
 loadcart(i)              // if cart at index exists, exit current cart and load the requested cart; returns 0 otherwise
 ```
 
-`field` must be an `arr_ref` containing the metadata key as a null-terminated string. `arr` must be an `arr_ref` pointing to a writable destination buffer large enough to hold the result. Passing a temporary string literal expression as `arr` is a **compile-time error** because `cartmeta` writes into the destination buffer; use a named mutable array declaration instead.
+`field` is a read-only `arr_ref` parameter containing the metadata key as a null-terminated string. `arr` is a **writable** `arr_ref` parameter; `cartmeta` writes the result into it. Passing a temporary string literal as `arr` is a **compile-time error** (see §2.8); use a named mutable array declaration instead.
 
 ### 3.7 Array Comparison
 
@@ -537,7 +542,7 @@ arreq(a, b, len)   → integer
 ```
 
 `streq(a, b)` compares two null-terminated integer sequences element by element. Returns `1` if both sequences contain
-the same elements up to and including the first `0`, `0` otherwise. `a` and `b` may be mutable or literal array references. Out-of-bounds reads return `0`, so a shorter array naturally compares unequal to a longer one at the point the short one ends. Comparison is capped at `MAX_ARR_ELEMS + 1` iterations as a safeguard against arrays with no null terminator.
+the same elements up to and including the first `0`, `0` otherwise. Both `a` and `b` are read-only `arr_ref` parameters; temporary literals are accepted. Out-of-bounds reads return `0`, so a shorter array naturally compares unequal to a longer one at the point the short one ends. Comparison is capped at `MAX_ARR_ELEMS + 1` iterations as a safeguard against arrays with no null terminator.
 
 `arreq(a, b, len)` compares exactly `len` elements of `a` and `b`. Returns `1` if all `len` elements are equal, `0` otherwise.
 A `len` of `0` always returns `1`.
