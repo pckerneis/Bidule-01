@@ -4,8 +4,8 @@
 > This document is the authoritative specification for the Bidule 01 platform.
 > Sections marked 🔲 are placeholders pending design decisions.
 
-**Spec version:** 0.5  
-**Last updated:** 2026-05-01
+**Spec version:** 0.6  
+**Last updated:** 2026-05-02
 
 ---
 
@@ -102,11 +102,11 @@ The language has two value kinds: `int` and `arr_ref`.
 
 `int` is a signed 32-bit integer with wraparound semantics.
 
-`arr_ref` is a reference to either a mutable array in the global array pool or a read-only array literal.
+`arr_ref` is a reference to a mutable array in the global array pool, or a temporary read-only reference to inline literal data valid for the duration of an expression.
 
 There is no boolean type; integers are used for truthiness, where `0` is false and any other value is true.
 
-String literals are compile-time syntax that produce read-only arrays of char codes, and variables that hold them are of kind `arr_ref`.
+A string literal used directly in an expression produces a temporary read-only `arr_ref` valid for the lifetime of that expression. A string literal assigned to a variable at the top level creates a mutable array in the global array pool initialised with the char codes of the literal (null-terminated); the variable is of kind `arr_ref`.
 
 The compiler assigns a fixed kind to each variable and parameter at compile time. A value kind cannot change after it has been established.
 
@@ -146,7 +146,7 @@ From highest to lowest:
 - A variable is created on its first assignment or at its top-level declaration.
 - Its **value kind** (`int` or `arr_ref`) is inferred from the right‑hand side:
   - `foo = 42` (top-level or inside a function) creates an `int` variable.
-  - `foo = "hello"` (top-level or inside a function) creates an `arr_ref` variable referencing the interned `"hello"` literal array.
+  - `foo = "hello"` at the top level creates an `arr_ref` variable backed by a new mutable array in the global array pool, initialised with the char codes of `"hello"` (null-terminated). The array is mutable after initialisation.
   - `foo[16]` at top level creates an `arr_ref` variable referencing the mutable array of size 16.
 - Top-level declarations of the form `IDENT '=' NUMBER` or `IDENT '=' STRING` are guaranteed to execute before any lifecycle function, including `init()`.
 - Once a variable’s kind is established, it cannot change. Mixed re‑declarations, such as:
@@ -220,15 +220,14 @@ Global declarations appear at the top level of the program (not inside a block).
 
 ```c
 buf[32]           // mutable array of 32 integers
-greeting = "hi"   // arr_ref variable bound to a string literal
+greeting = "hi"   // arr_ref variable backed by a new mutable array initialised with "hi"
 lives = 3         // int variable initialised to 3
 ```
 
 `buf[32]` declares a mutable array of 32 integers and creates an `arr_ref` variable named `buf`.
 All elements are initialised to `0` at cart load time.
 
-`greeting = "hi"` declares an `arr_ref` variable bound to the interned `"hi"` literal array.
-The binding is established before any lifecycle function runs.
+`greeting = "hi"` declares an `arr_ref` variable backed by a new mutable array in the global array pool. The array is initialised with the char codes of `"hi"` (null-terminated, 3 elements) at cart load time, before any lifecycle function runs. The array is mutable after initialisation.
 
 `lives = 3` declares an `int` variable initialised to `3` before any lifecycle function runs.
 This is equivalent to assigning `lives = 3` at the top of `init()`, but is guaranteed to execute first.
@@ -260,16 +259,21 @@ n = buf.length   // n == 32
 
 ### String Literals and `arr_ref`
 
-A string literal is compile‑time syntax that defines a read‑only array of char codes, null‑terminated (the final element is always `0`). The compiler interns all unique string literals into the array literal table.
+String literals are compile-time syntax producing null-terminated sequences of char codes (the final element is always `0`). There is no literal pool; no interning or deduplication occurs.
 
-An array reference to a literal may appear wherever an array reference is expected:
+**Temporary literal (expression context):** A string literal used directly in an expression produces a temporary `arr_ref` valid only for the lifetime of that expression. The literal data is embedded inline in the bytecode. Writing to a temporary literal via `[]` is a **compile-time error**.
 
 ```c
-foo = "hello"        // foo is an arr_ref pointing to the "hello" literal array
-print(foo, 0, 0, 1)
+print("hello", 0, 0, 1)   // temporary arr_ref, valid during the call
 ```
 
-Element assignment to a literal array reference (via `[]`) is a **silent no‑op**.
+**Mutable array from literal (declaration):** A top-level declaration of the form `foo = "hello"` allocates a new mutable array in the global array pool, initialised with the char codes of `"hello"` (null-terminated). The variable `foo` is of kind `arr_ref` and may be indexed and written like any mutable array.
+
+```c
+foo = "hello"        // foo is an arr_ref backed by a mutable pool array
+foo[0] = 72          // valid — modifies the array in place
+print(foo, 0, 0, 1)
+```
 
 Escape sequences: `\\` — literal backslash; `\"` — literal double quote.
 
@@ -523,7 +527,7 @@ cartmeta(i, field, arr)  // fills arr with the value of the requested metadata f
 loadcart(i)              // if cart at index exists, exit current cart and load the requested cart; returns 0 otherwise
 ```
 
-`field` must be an `arr_ref` containing the metadata key as a null-terminated string. `arr` must be an `arr_ref` pointing to a writable destination buffer large enough to hold the result. Passing a read-only string literal as `arr` is a **compile-time error** because `cartmeta` writes into the destination buffer.
+`field` must be an `arr_ref` containing the metadata key as a null-terminated string. `arr` must be an `arr_ref` pointing to a writable destination buffer large enough to hold the result. Passing a temporary string literal expression as `arr` is a **compile-time error** because `cartmeta` writes into the destination buffer; use a named mutable array declaration instead.
 
 ### 3.7 Array Comparison
 
@@ -610,7 +614,6 @@ Unknown `@keys` are ignored by the runtime.
 
 - Maximum cart **source** size: **65 536 bytes** (64 KB).
 - Maximum compiled **bytecode** size: **16 384 bytes** (16 KB).
-- Maximum unique **array literals** per cart: **32** (see §6.3).
 
 ### 4.6 Compiled Cart Format
 
@@ -629,9 +632,7 @@ All multi-byte integers are little-endian.
 | 5 | 1 B | Flags: `0` (reserved) |
 | 6 | 2 B | Metadata block length _N_ |
 | 8 | _N_ B | Metadata block (raw text, ignored by runtime) |
-| 8+_N_ | 1 B | Array literal count (0–max per §6.3) |
-| … | … | Array literal table: for each entry: `[len: u8][elements: len bytes]` (char codes; null-terminated; last byte is always `0`) |
-| … | 1 B | Array declaration count (0–max per §6.3) |
+| 8+_N_ | 1 B | Array declaration count (0–max per §6.3) |
 | … | … | Array declaration table: for each entry: `[size: u16 LE]` — declared element count of each mutable array, in declaration order |
 | … | 2 B | `init_off` — bytecode offset of `init()` body (`0xFFFF` = not defined) |
 | … | 2 B | `update_off` |
@@ -655,10 +656,10 @@ The VM is a **stack-based interpreter**. Instructions use variable-width encodin
 | Opcode | Hex | Operands | Description |
 |---|---|---|---|
 | `PUSH_INT` | `0x00` | `i32` | Push 32-bit integer constant |
-| `PUSH_ARR` | `0x01` | `u8 litidx` | Push read-only literal array reference; `litidx` indexes the array literal table |
+| `PUSH_LIT` | `0x01` | `u8 len`, `len+1 bytes` | Push a temporary read-only array reference to the inline null-terminated char-code data that follows. The reference is valid only for the current expression. |
 | `LOAD` | `0x02` | `u8 varidx` | Push int global variable; `varidx` is a **scalar slot** (0–63) |
-| `STORE` | `0x03` | `u8 varidx` | Pop → global variable slot. `T_LIT` values are encoded as `-(litidx+1)` (negative); `T_MUT` as `mutidx` (non-negative); int values as-is. |
-| `LOAD_ARR` | `0x04` | `u8 varidx` | Push arr_ref from global slot: negative stored value → `T_LIT` ref; non-negative → `T_MUT` ref. |
+| `STORE` | `0x03` | `u8 varidx` | Pop → global variable slot. `arr_ref` values are encoded as the mutable array pool index (non-negative); int values as-is. |
+| `LOAD_ARR` | `0x04` | `u8 varidx` | Push `arr_ref` from global slot as a mutable array reference using the stored pool index. |
 | `ADD` | `0x10` | — | Pop b, pop a; push `a + b` |
 | `SUB` | `0x11` | — | Push `a - b` |
 | `MUL` | `0x12` | — | Push `a * b` |
@@ -702,9 +703,8 @@ The `u8` operands in the opcode set refer to **three distinct index spaces**, ea
 |---|---|---|---|
 | **Scalar variable slots** | `0`–`63` | `LOAD`, `STORE`, `LOAD_ARR`, `DYN_ARR_GET`, `DYN_ARR_SET`, `DYN_ARR_LEN`, parameter slots in binary header | Entry in the global variable table |
 | **Array pool indices** | `0`–`ndecl−1` | `ARR_GET`, `ARR_SET`, `ARR_LEN`, `PUSH_ARR_MUT` | Entry in the mutable array pool (§6.3) |
-| **Array literal indices** | `0`–`nlit−1` | `PUSH_ARR` | Entry in the read-only literal table (§6.3) |
 
-A source-level name belongs to exactly one space, determined at its declaration point: a bare assignment (`x = …`) allocates a scalar slot; an explicit size declaration (`name[N]`) allocates an array pool entry. Using an array name where a scalar slot is expected, or vice versa, is a **compile error**. The runtime performs no cross-space validation.
+A source-level name belongs to exactly one space, determined at its declaration point: a bare assignment (`x = …`) allocates a scalar slot; an explicit size declaration (`name[N]`) or a string-literal assignment (`name = "…"`) allocates an array pool entry. Using an array name where a scalar slot is expected, or vice versa, is a **compile error**. The runtime performs no cross-space validation.
 
 #### Compound assignment compilation
 
@@ -957,14 +957,13 @@ The RP2040 provides **264 KB SRAM** total.
 |---|---|---|
 | Firmware / runtime | ~100 KB | Interpreter, built-ins, USB stack, SDK |
 | Cart bytecode buffer | 16 KB | Compiled cart loaded from flash |
-| Array literal table | ~4 KB | 32 literals × 129 bytes (128 chars + null) |
 | Global variable table (live + 2 audio shadows) | ~768 B | 3 × 64 vars × 4 bytes |
 | Global array pool | ~16 KB | 16 arrays × 256 elements × 4 bytes |
 | Framebuffer | 1 KB | 128×64 × 1 bit (8 pages × 128 bytes) |
 | Evaluation stacks | ~512 B | 2 × 32 slots — core 0 and core 1 |
-| Free / reserved | ~142 KB | |
+| Free / reserved | ~146 KB | |
 
-Total consumed ≈ ~122 KB, leaving ~142 KB free.
+Total consumed ≈ ~118 KB, leaving ~146 KB free.
 
 ### 6.2 Variable Table
 
@@ -972,25 +971,18 @@ Maximum **64 global variables** per cart. Each variable occupies one 32-bit slot
 
 ### 6.3 Array Storage
 
-All arrays are globally declared and statically sized. The runtime maintains two array regions:
+All arrays are globally declared and statically sized. There is a single array region at runtime:
 
-**Array literal table (read-only):** All unique string literals in a cart are known at compile time.
-The compiler collects them and embeds them as a read-only table in the compiled binary.
-Each entry is a null-terminated sequence of char codes. At runtime these are accessible as read-only array references;
-element assignment to a literal is a silent no-op.
-Array references are not copied into the global array pool.
-Literal arrays are stored in the read-only literal table, not in the mutable global array pool.
+**Global array pool (mutable):** The array pool stores the backing data for all named array declarations, allocated in declaration order from a flat pool. This includes both explicit size declarations (`name[N]`) and string-literal declarations (`name = "…"`). For `name[N]`, all elements are initialised to `0` at cart load time. For `name = "…"`, elements are initialised with the char codes of the literal (null-terminated); the remaining elements (if any) are `0`. The pool is a contiguous block of integer storage subdivided at compile time — no dynamic allocation occurs.
 
-**Global array pool (mutable):** The array pool stores the backing data for mutable arrays declared with `name[N]` syntax, allocated in declaration order from a flat pool. All elements are initialised to `0` at cart load time. The pool is a contiguous block of integer storage subdivided at compile time — no dynamic allocation occurs.
+String literals used directly in expressions (not assigned to a variable) are embedded inline in the bytecode as temporary data. They do not occupy a slot in the global array pool and are not retained after the expression completes.
 
-A variable of kind `arr_ref` may point to either backing store (mutable pool or literal table).
+A variable of kind `arr_ref` always points to a mutable array in the global array pool.
 
 **Fixed limits:**
 
 | Limit | Value |
 |---|---|
-| Max unique array literals per cart | **32** |
-| Max chars per literal (excl. null terminator) | **128** |
 | Max mutable array declarations per cart | **16** |
 | Max elements per mutable array | **256** |
 
