@@ -6,7 +6,7 @@ import { compile } from './compiler.js';
 // ─── Opcode constants (mirrors compiler.js OP table) ─────────────────────────
 
 const OP = {
-  PUSH_INT: 0x00, PUSH_ARR: 0x01, LOAD: 0x02, STORE: 0x03,
+  PUSH_INT: 0x00, PUSH_LIT: 0x01, LOAD: 0x02, STORE: 0x03,
   ADD: 0x10, SUB: 0x11, MUL: 0x12, DIV: 0x13, MOD: 0x14, NEG: 0x15,
   BAND: 0x20, BOR: 0x21, BXOR: 0x22, SHL: 0x23, SHR: 0x24,
   EQ: 0x30, NE: 0x31, LT: 0x32, LE: 0x33, GT: 0x34, GE: 0x35, NOT: 0x36,
@@ -30,13 +30,15 @@ function parseBinary(bin) {
   r8(); // flags (reserved)
   const meta = new TextDecoder().decode(rN(r16()));
 
-  const arrLitCount = r8();
-  const arrLits = [];
-  for (let i = 0; i < arrLitCount; i++) arrLits.push([...rN(r8())]);
-
+  // Array declaration table: [size: u16][initLen: u8][initLen bytes]
   const arrDeclCount = r8();
   const arrDecls = [];
-  for (let i = 0; i < arrDeclCount; i++) arrDecls.push(r16());
+  for (let i = 0; i < arrDeclCount; i++) {
+    const size    = r16();
+    const initLen = r8();
+    const initData = initLen > 0 ? [...rN(initLen)] : [];
+    arrDecls.push({ size, initData });
+  }
 
   const initOff         = r16();
   const updateOff       = r16();
@@ -70,7 +72,7 @@ function parseBinary(bin) {
   }
 
   return {
-    magic, version, meta, arrLits, arrDecls,
+    magic, version, meta, arrDecls,
     entryPoints: { init: initOff, update: updateOff, draw: drawOff, audio: audioOff },
     paramSlots: {
       updateFrame: updateFrameSlot, updateInput: updateInputSlot,
@@ -95,7 +97,15 @@ function disassemble(bytes) {
         operands = [(bytes[ip] | (bytes[ip+1]<<8) | (bytes[ip+2]<<16) | (bytes[ip+3]<<24)) | 0];
         ip += 4;
         break;
-      case OP.PUSH_ARR: case OP.LOAD: case OP.STORE:
+      case OP.PUSH_LIT: {
+        // [len][len bytes of char data]
+        const len = bytes[ip++];
+        const data = [...bytes.slice(ip, ip + len)];
+        operands = [len, ...data];
+        ip += len;
+        break;
+      }
+      case OP.LOAD: case OP.STORE:
       case OP.ARR_GET:  case OP.ARR_SET: case OP.ARR_LEN: case OP.PUSH_ARR_MUT:
         operands = [bytes[ip++]];
         break;
@@ -174,8 +184,8 @@ Deno.test('Binary structure', async (t) => {
     eq(getBinary('').magic, 'BDBN');
   });
 
-  await t.step('format version is 1', () => {
-    eq(getBinary('').version, 1);
+  await t.step('format version is 2', () => {
+    eq(getBinary('').version, 2);
   });
 
   await t.step('undefined lifecycle function has offset 0xFFFF', () => {
@@ -186,19 +196,25 @@ Deno.test('Binary structure', async (t) => {
     ok(getBinary('draw(f){}').entryPoints.draw !== 0xFFFF);
   });
 
-  await t.step('"hi" encoded as null-terminated char codes in arrLits', () => {
-    const b = getBinary('draw(f){ print("hi", 0, 0, 1) }');
-    const lit = b.arrLits.find(l => l[0] === 104);
-    ok(lit, 'literal "hi" not found in arrLits');
-    eq(lit[0], 104); // 'h'
-    eq(lit[1], 105); // 'i'
-    eq(lit[2], 0);   // null terminator
-  });
-
   await t.step('array declaration size appears in arrDecls', () => {
     const b = getBinary('buf[8]\ndraw(f){}');
     eq(b.arrDecls.length, 1);
-    eq(b.arrDecls[0], 8);
+    eq(b.arrDecls[0].size, 8);
+  });
+
+  await t.step('zero-init array has initData []', () => {
+    const b = getBinary('buf[8]\ndraw(f){}');
+    eq(b.arrDecls[0].initData.length, 0);
+  });
+
+  await t.step('string-init declaration has initData with char codes', () => {
+    const b = getBinary('greeting = "hi"\ndraw(f){}');
+    eq(b.arrDecls.length, 1);
+    const d = b.arrDecls[0];
+    eq(d.size, 3);          // 'h','i',0
+    eq(d.initData[0], 104); // 'h'
+    eq(d.initData[1], 105); // 'i'
+    eq(d.initData[2], 0);   // null
   });
 });
 
@@ -236,7 +252,7 @@ Deno.test('Scalar variables', async (t) => {
 Deno.test('Arrays', async (t) => {
   await t.step('declaration size is recorded in arrDecls', () => {
     const b = getBinary('nums[16]\ndraw(f){}');
-    eq(b.arrDecls[0], 16);
+    eq(b.arrDecls[0].size, 16);
   });
 
   await t.step('element read emits ARR_GET', () => {
@@ -271,28 +287,63 @@ Deno.test('Arrays', async (t) => {
     const decls = Array.from({ length: 17 }, (_, i) => `a${i}[4]`).join('\n');
     ok(errorsOf(`${decls}\ndraw(f){}`).length > 0);
   });
+
+  await t.step('string-init declaration counts toward the 16-array limit', () => {
+    const decls = Array.from({ length: 16 }, (_, i) => `a${i}[4]`).join('\n');
+    ok(errorsOf(`${decls}\ngreeting = "hi"\ndraw(f){}`).length > 0);
+  });
 });
 
 Deno.test('String literals', async (t) => {
-  await t.step('string literal emits PUSH_ARR', () => {
-    ok(hasOp('draw(f){ print("hi", 0, 0, 1) }', OP.PUSH_ARR));
+  await t.step('string literal in expression emits PUSH_LIT', () => {
+    ok(hasOp('draw(f){ print("hi", 0, 0, 1) }', OP.PUSH_LIT));
   });
 
-  await t.step('"hi" stored as [h=104, i=105, null=0] in arrLits', () => {
-    const b   = getBinary('draw(f){ print("hi", 0, 0, 1) }');
-    const lit = b.arrLits.find(l => l[0] === 104);
-    ok(lit, 'literal not found');
-    eq(lit[0], 104); eq(lit[1], 105); eq(lit[2], 0);
+  await t.step('PUSH_LIT contains correct char codes for "hi"', () => {
+    const instrs = opsOf('draw(f){ print("hi", 0, 0, 1) }');
+    const lit = instrs.find(i => i.op === OP.PUSH_LIT);
+    ok(lit, 'PUSH_LIT not found');
+    // operands: [len, char0, char1, ..., 0]
+    eq(lit.operands[0], 3);   // len = 3 ('h','i',NUL)
+    eq(lit.operands[1], 104); // 'h'
+    eq(lit.operands[2], 105); // 'i'
+    eq(lit.operands[3], 0);   // null terminator
   });
 
-  await t.step('empty string "" stored as [null=0] in arrLits', () => {
-    const b = getBinary('draw(f){ print("", 0, 0, 1) }');
-    ok(b.arrLits.some(l => l.length === 1 && l[0] === 0));
+  await t.step('empty string "" emits PUSH_LIT with len=1 and data=[0]', () => {
+    const instrs = opsOf('draw(f){ print("", 0, 0, 1) }');
+    const lit = instrs.find(i => i.op === OP.PUSH_LIT);
+    ok(lit, 'PUSH_LIT not found');
+    eq(lit.operands[0], 1);
+    eq(lit.operands[1], 0);
   });
 
-  await t.step('duplicate string literals are deduplicated to one entry', () => {
-    const b = getBinary('draw(f){ print("ab", 0, 0, 1)\nprint("ab", 0, 10, 1) }');
-    eq(b.arrLits.length, 1);
+  await t.step('duplicate string literals each emit their own PUSH_LIT (no dedup)', () => {
+    const instrs = opsOf('draw(f){ print("ab", 0, 0, 1)\nprint("ab", 0, 10, 1) }');
+    eq(instrs.filter(i => i.op === OP.PUSH_LIT).length, 2);
+  });
+
+  await t.step('top-level string declaration allocates a pool array with init data', () => {
+    const b = getBinary('msg = "hi"\ndraw(f){}');
+    eq(b.arrDecls.length, 1);
+    eq(b.arrDecls[0].size, 3);
+    eq(b.arrDecls[0].initData[0], 104);
+    eq(b.arrDecls[0].initData[1], 105);
+    eq(b.arrDecls[0].initData[2], 0);
+  });
+
+  await t.step('top-level string declaration emits no PUSH_LIT or STORE in bytecode', () => {
+    const b = getBinary('msg = "hi"\ndraw(f){}');
+    // No PUSH_LIT should appear (init is done at load time, not in bytecode)
+    for (const off of [b.entryPoints.init, b.entryPoints.draw]) {
+      if (off === 0xFFFF) continue;
+      const instrs = disassemble(b.bytecode.slice(off));
+      ok(!instrs.some(i => i.op === OP.PUSH_LIT), 'unexpected PUSH_LIT in init/draw');
+    }
+  });
+
+  await t.step('bare string-init variable in expression emits PUSH_ARR_MUT', () => {
+    ok(hasOp('msg = "hi"\ndraw(f){ print(msg, 0, 0, 1) }', OP.PUSH_ARR_MUT));
   });
 });
 
@@ -404,6 +455,10 @@ Deno.test('Builtins', async (t) => {
     eq(call?.operands[1], 4); // 4 args
   });
 
+  await t.step('streq with two literal args compiles without error', () => {
+    ok(compilesOk('buf[4]\ndraw(f){ x = streq(buf, "hi") }'));
+  });
+
   await t.step('streq emits CALL with id 13 and argc 2', () => {
     const call = opsOf('buf[4]\ndraw(f){ x = streq(buf, "hi") }')
       .find(i => i.op === OP.CALL && i.operands[0] === 13);
@@ -418,8 +473,16 @@ Deno.test('Builtins', async (t) => {
     eq(call.operands[1], 3);
   });
 
-  await t.step('cartmeta with 3 args compiles clean', () => {
+  await t.step('cartmeta with mutable arr as 3rd arg compiles clean', () => {
     ok(compilesOk('buf[32]\ndraw(f){ cartmeta(0, "id", buf) }'));
+  });
+
+  await t.step('cartmeta with string literal as 3rd arg is a compile error', () => {
+    ok(errorsOf('draw(f){ cartmeta(0, "id", "oops") }').length > 0);
+  });
+
+  await t.step('cartmeta with string literal as 2nd arg (field) compiles clean', () => {
+    ok(compilesOk('buf[32]\ndraw(f){ cartmeta(0, "title", buf) }'));
   });
 
   await t.step('cartmeta with 2 args is a compile error', () => {
@@ -440,6 +503,24 @@ Deno.test('Builtins', async (t) => {
 
   await t.step('audio-safe builtin inside audio() is allowed', () => {
     ok(compilesOk('audio(t){ abs(t) }'));
+  });
+});
+
+Deno.test('Writable parameter checks', async (t) => {
+  await t.step('user fn with no array writes accepts temp literal', () => {
+    ok(compilesOk('fn show(s[]) { x = s[0] }\ndraw(f){ show("hi") }'));
+  });
+
+  await t.step('user fn that writes to arr param rejects temp literal', () => {
+    ok(errorsOf('fn fill(s[]) { s[0] = 1 }\ndraw(f){ fill("hi") }').length > 0);
+  });
+
+  await t.step('user fn with write param accepts mutable pool array', () => {
+    ok(compilesOk('buf[4]\nfn fill(s[]) { s[0] = 1 }\ndraw(f){ fill(buf) }'));
+  });
+
+  await t.step('user fn with compound-assign element rejects temp literal', () => {
+    ok(errorsOf('fn inc(a[]) { a[0] += 1 }\ndraw(f){ inc("x") }').length > 0);
   });
 });
 

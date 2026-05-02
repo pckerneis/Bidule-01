@@ -1,16 +1,15 @@
 // Bidule 01 — bytecode VM
 // Pure ES module; imported by app.js and audio-worklet.js.
 
-export const MAX_VARS     = 64;
-export const MAX_STACK    = 32;
-export const MAX_ARR_LITS = 32;
+export const MAX_VARS      = 64;
+export const MAX_STACK     = 32;
 export const MAX_ARR_DECLS = 16;
 export const MAX_ARR_ELEMS = 256;
 
 // ─── Opcodes ──────────────────────────────────────────────────────────────────
 
 const OP = {
-  PUSH_INT:0x00, PUSH_ARR:0x01, LOAD:0x02, STORE:0x03, LOAD_ARR:0x04,
+  PUSH_INT:0x00, PUSH_LIT:0x01, LOAD:0x02, STORE:0x03, LOAD_ARR:0x04,
   ADD:0x10, SUB:0x11, MUL:0x12, DIV:0x13, MOD:0x14, NEG:0x15,
   BAND:0x20, BOR:0x21, BXOR:0x22, SHL:0x23, SHR:0x24,
   EQ:0x30, NE:0x31, LT:0x32, LE:0x33, GT:0x34, GE:0x35, NOT:0x36,
@@ -33,6 +32,8 @@ const B = {
 };
 
 // ─── Value type tags (stack only; globals array is plain Int32Array) ──────────
+// T_LIT: .v is a bytecode offset; code[v-1] is the len byte, code[v..v+len-1] is char data.
+// T_MUT: .v is an index into this._pool[].
 
 const T_INT = 0, T_LIT = 1, T_MUT = 2;
 
@@ -63,7 +64,7 @@ export class VM {
     const bin = binary instanceof Uint8Array ? binary : new Uint8Array(binary);
     if (bin.length < 8) return false;
     if (bin[0]!==0x42||bin[1]!==0x44||bin[2]!==0x42||bin[3]!==0x4E) return false;
-    if (bin[4] !== 1) return false;
+    if (bin[4] !== 2) return false;
 
     let p = 6;
     const r8  = () => bin[p++];
@@ -80,22 +81,16 @@ export class VM {
     });
     p += metaLen;
 
-    // Array literal table
-    const nlit = r8();
-    this._lits = [];
-    for (let i = 0; i < nlit; i++) {
-      const len = r8();
-      this._lits.push(bin.slice(p, p+len));
-      p += len;
-    }
-
-    // Array declaration table (mutable pool)
+    // Array declaration table: [size: u16][initLen: u8][initLen bytes of char codes]
     const ndecl = r8();
     this._pool   = [];
     this._poolSz = [];
     for (let i = 0; i < ndecl; i++) {
-      const sz = Math.min(r16(), MAX_ARR_ELEMS);
-      this._pool.push(new Int32Array(sz));
+      const sz      = Math.min(r16(), MAX_ARR_ELEMS);
+      const initLen = r8();
+      const arr     = new Int32Array(sz);
+      for (let j = 0; j < initLen && j < sz; j++) arr[j] = r8();
+      this._pool.push(arr);
       this._poolSz.push(sz);
     }
 
@@ -183,8 +178,16 @@ export class VM {
 
   _sp(slot, val) { if (slot < MAX_VARS) this._globals[slot] = val | 0; }
 
+  // Read element i from an arr_ref value.
+  // T_LIT: idx is a bytecode offset; data at this._code[idx+i], len at this._code[idx-1].
+  // T_MUT: idx is a pool index.
   _elem(type, idx, i) {
-    if (type === T_LIT) { const l=this._lits[idx]; return (l&&i>=0&&i<l.length) ? l[i] : 0; }
+    if (type === T_LIT) {
+      const code = this._code;
+      if (!code || idx <= 0) return 0;
+      const len = code[idx - 1];
+      return (i >= 0 && i < len) ? code[idx + i] : 0;
+    }
     if (type === T_MUT) { const a=this._pool[idx]; return (a&&i>=0&&i<a.length) ? a[i] : 0; }
     return 0;
   }
@@ -192,8 +195,10 @@ export class VM {
   _toStr(type, idx) {
     let s = '';
     if (type === T_LIT) {
-      const l = this._lits[idx]; if (!l) return s;
-      for (let i = 0; i < l.length; i++) { if (!l[i]) break; s += String.fromCharCode(l[i]); }
+      const code = this._code;
+      if (!code || idx <= 0) return s;
+      const len = code[idx - 1];
+      for (let i = 0; i < len; i++) { if (!code[idx + i]) break; s += String.fromCharCode(code[idx + i]); }
     } else if (type === T_MUT) {
       const a = this._pool[idx]; if (!a) return s;
       const sz = this._poolSz[idx];
@@ -230,14 +235,24 @@ export class VM {
 
       // ── Literals ──────────────────────────────────────────────────────────────
       case OP.PUSH_INT:     PI(R32()); break;
-      case OP.PUSH_ARR:     PA(T_LIT, R8()); break;
+      case OP.PUSH_LIT: {
+        // Inline literal: [len][char0..charN-1][0]
+        // T_LIT value is the bytecode offset of the first char code.
+        // code[dataOff - 1] = len (the byte we just read).
+        const len     = R8();
+        const dataOff = ip;
+        ip += len;
+        PA(T_LIT, dataOff);
+        break;
+      }
       case OP.PUSH_ARR_MUT: PA(T_MUT, R8()); break;
 
       // ── Variables ─────────────────────────────────────────────────────────────
       case OP.LOAD:  { const s=R8(); PI(s<MAX_VARS ? G[s] : 0); break; }
       case OP.STORE: {
+        // arr_ref encoding: T_LIT stored as -(dataOff+1) (always negative),
+        // T_MUT stored as pool index (always non-negative).
         const s=R8(); const {t,v}=PO();
-        // arr_ref encoding: T_LIT stored as -(litidx+1) (negative), T_MUT as mutidx (non-negative)
         if(s<MAX_VARS) G[s] = (t===T_LIT) ? -(v+1) : v|0;
         break;
       }
@@ -303,25 +318,31 @@ export class VM {
       }
 
       // Dynamic arr_ref variable ops — operand is a scalar var slot, not a pool index.
-      // Encoding: G[slot] < 0 → T_LIT index -(G[slot]+1), ≥ 0 → T_MUT index G[slot].
+      // Encoding: G[slot] < 0 → T_LIT, data at code[-(G[slot]+1)..], len at code[-(G[slot]+1)-1].
+      //           G[slot] ≥ 0 → T_MUT pool index.
       case OP.DYN_ARR_GET: {
         const s=R8(), idx=PO().v;
         const enc=s<MAX_VARS ? G[s] : 0;
-        if(enc<0) { const l=this._lits[-(enc+1)]; PI(l&&idx>=0&&idx<l.length ? l[idx] : 0); }
-        else      { const a=this._pool[enc];       PI(a&&idx>=0&&idx<a.length ? a[idx] : 0); }
+        if(enc<0) {
+          const off=-(enc+1);
+          const len=code[off-1];
+          PI(off>0&&idx>=0&&idx<len ? code[off+idx] : 0);
+        } else {
+          const a=this._pool[enc]; PI(a&&idx>=0&&idx<a.length ? a[idx] : 0);
+        }
         break;
       }
       case OP.DYN_ARR_SET: {
         const s=R8(), val=PO().v|0, idx=PO().v;
         const enc=s<MAX_VARS ? G[s] : 0;
+        // T_LIT (negative): bytecode is read-only — silent no-op
         if(enc>=0) { const a=this._pool[enc]; if(a&&idx>=0&&idx<a.length) a[idx]=val; }
-        // read-only literal: silent no-op
         break;
       }
       case OP.DYN_ARR_LEN: {
         const s=R8();
         const enc=s<MAX_VARS ? G[s] : 0;
-        if(enc<0) { const l=this._lits[-(enc+1)]; PI(l ? l.length : 0); }
+        if(enc<0) { const off=-(enc+1); PI(off>0 ? code[off-1] : 0); }
         else      { PI(this._poolSz[enc] ?? 0); }
         break;
       }
@@ -349,6 +370,7 @@ export class VM {
           const slot = fn.paramSlots[i];
           if (slot < MAX_VARS && args[i]) {
             const {t, v} = args[i];
+            // T_LIT stored as -(dataOff+1); T_MUT as pool index (non-negative)
             G[slot] = (t===T_LIT) ? -(v+1) : v|0;
           }
         }

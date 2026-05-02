@@ -12,19 +12,22 @@
 #define MAX_VARS        64
 #define MAX_BYTECODE    16384
 #define STACK_SIZE      32
-#define MAX_ARR_LITS    32
-#define MAX_ARR_LIT_LEN 128
 #define MAX_ARR_DECLS   16
 #define MAX_ARR_ELEMS   256
 #define MAX_USER_FNS    64
 #define MAX_FN_PARAMS   8
 #define MAX_CALL_DEPTH  8
+#define MAX_PRINT_BUF   288   // covers max pool array (256) + int digits + margin
 
 // ─── Value ───────────────────────────────────────────────────────────────────
 
+// VALUE_ARR_LIT: .i is the bytecode offset of the first char code of an inline
+//   PUSH_LIT string (vm.code[.i - 1] = len, vm.code[.i .. .i+len-1] = char data).
+// VALUE_ARR_MUT: .i is the index into the mutable array pool.
+
 #define VALUE_INT     0
-#define VALUE_ARR_LIT 1   // .i = index into arrlittab (read-only literal)
-#define VALUE_ARR_MUT 2   // .i = index into arrpool   (mutable declaration)
+#define VALUE_ARR_LIT 1
+#define VALUE_ARR_MUT 2
 #define VALUE_VOID    0xFF
 
 typedef struct {
@@ -39,12 +42,7 @@ static struct {
     uint8_t  code[MAX_BYTECODE];
     uint16_t code_len;
 
-    // Array literal table (read-only, loaded from binary)
-    uint8_t  arrlittab[MAX_ARR_LITS][MAX_ARR_LIT_LEN + 1];  // null-terminated
-    uint8_t  arrlitlen[MAX_ARR_LITS];
-    uint8_t  arrlit_count;
-
-    // Mutable array pool (declared with name[N] syntax)
+    // Mutable array pool (declared with name[N] or name = "str" syntax)
     int32_t  arrpool[MAX_ARR_DECLS][MAX_ARR_ELEMS];
     uint8_t  arrdeclsize[MAX_ARR_DECLS];
     uint8_t  arrdecl_count;
@@ -107,12 +105,13 @@ static inline uint16_t ru16(const uint8_t *p) {
 // ─── Array helpers ────────────────────────────────────────────────────────────
 
 // Return element idx from any array value; 0 for out-of-bounds or non-array.
+// VALUE_ARR_LIT: data is inline in vm.code; len is at vm.code[v.i - 1].
 static int32_t arr_elem(Value v, int idx) {
     if (v.type == VALUE_ARR_LIT) {
-        int i = v.i;
-        if (i >= 0 && i < vm.arrlit_count && idx >= 0 && idx < vm.arrlitlen[i])
-            return (int32_t)vm.arrlittab[i][idx];
-        return 0;
+        uint16_t off = (uint16_t)v.i;
+        if (off == 0 || off >= vm.code_len) return 0;
+        uint8_t len = vm.code[off - 1];
+        return (idx >= 0 && idx < len) ? (int32_t)vm.code[off + idx] : 0;
     }
     if (v.type == VALUE_ARR_MUT) {
         int i = v.i;
@@ -128,11 +127,11 @@ static int32_t arr_elem(Value v, int idx) {
 static void arr_to_cstr(Value v, char *buf, int bufsize) {
     int n = 0;
     if (v.type == VALUE_ARR_LIT) {
-        int idx = v.i;
-        if (idx >= 0 && idx < vm.arrlit_count) {
-            int len = vm.arrlitlen[idx];
+        uint16_t off = (uint16_t)v.i;
+        if (off > 0 && off < vm.code_len) {
+            uint8_t len = vm.code[off - 1];
             for (int j = 0; j < len && n < bufsize - 1; j++) {
-                uint8_t c = vm.arrlittab[idx][j];
+                uint8_t c = vm.code[off + j];
                 if (c == 0) break;
                 buf[n++] = (char)c;
             }
@@ -178,7 +177,7 @@ static Value call_builtin(uint8_t id, Value *a) {
         display_line(a[0].i, a[1].i, a[2].i, a[3].i, a[4].i);
         return (Value){ VALUE_VOID };
     case BUILTIN_PRINT: {
-        char buf[MAX_ARR_LIT_LEN + 16];
+        char buf[MAX_PRINT_BUF];
         const char *text;
         if (a[0].type == VALUE_INT) {
             snprintf(buf, sizeof(buf), "%d", (int)a[0].i);
@@ -216,8 +215,6 @@ static Value call_builtin(uint8_t id, Value *a) {
 
     // Array comparison
     case BUILTIN_STREQ: {
-        // Compare null-terminated element sequences; arr_elem returns 0 for OOB,
-        // so mismatched lengths naturally produce inequality.
         for (int i = 0; i <= MAX_ARR_ELEMS; i++) {
             int32_t ea = arr_elem(a[0], i);
             int32_t eb = arr_elem(a[1], i);
@@ -244,7 +241,6 @@ static Value call_builtin(uint8_t id, Value *a) {
     case BUILTIN_CARTCOUNT:
         return (Value){ VALUE_INT, cart_count() };
     case BUILTIN_CARTMETA: {
-        // cartmeta(cart_index, field_arr, dest_arr) → length written
         char field[32];
         arr_to_cstr(a[1], field, sizeof(field));
         const char *val = cart_meta(a[0].i, field);
@@ -308,7 +304,16 @@ static Value exec(uint16_t entry, Value *globals, Value *stk) {
 
         // ── Literals ─────────────────────────────────────────────────────────
         case OP_PUSH_INT:     PUSH_I(R32()); break;
-        case OP_PUSH_ARR:     PUSH(((Value){ VALUE_ARR_LIT, R8() })); break;
+        case OP_PUSH_LIT: {
+            // Inline literal: [len][char0 .. charN-1][0]
+            // Push a T_LIT value whose .i is the bytecode offset of the first char code.
+            // vm.code[dataOff - 1] = len (the byte we just read via R8).
+            uint8_t  len     = R8();
+            uint16_t dataOff = ip;
+            ip += len;
+            PUSH(((Value){ VALUE_ARR_LIT, (int32_t)dataOff }));
+            break;
+        }
         case OP_PUSH_ARR_MUT: PUSH(((Value){ VALUE_ARR_MUT, R8() })); break;
 
         // ── Variables ────────────────────────────────────────────────────────
@@ -440,17 +445,20 @@ static Value exec(uint16_t entry, Value *globals, Value *stk) {
                 if (i >= 0 && i < vm.arrdecl_count && idx >= 0 && idx < vm.arrdeclsize[i])
                     vm.arrpool[i][idx] = val.i;
             }
+            // VALUE_ARR_LIT: bytecode is read-only — silent no-op
             break;
         }
         case OP_DYN_ARR_LEN: {
-            uint8_t slot = R8();
-            Value   v    = slot < MAX_VARS ? globals[slot] : (Value){ VALUE_INT, 0 };
-            if (v.type == VALUE_ARR_LIT)
-                PUSH_I(v.i >= 0 && v.i < vm.arrlit_count ? vm.arrlitlen[v.i] : 0);
-            else if (v.type == VALUE_ARR_MUT)
+            uint8_t  slot = R8();
+            Value    v    = slot < MAX_VARS ? globals[slot] : (Value){ VALUE_INT, 0 };
+            if (v.type == VALUE_ARR_LIT) {
+                uint16_t off = (uint16_t)v.i;
+                PUSH_I(off > 0 && off < vm.code_len ? vm.code[off - 1] : 0);
+            } else if (v.type == VALUE_ARR_MUT) {
                 PUSH_I(v.i >= 0 && v.i < vm.arrdecl_count ? vm.arrdeclsize[v.i] : 0);
-            else
+            } else {
                 PUSH_I(0);
+            }
             break;
         }
 
@@ -482,14 +490,15 @@ done:
 // Binary format (.bdb) — all multi-byte integers little-endian:
 //
 //   [0]     4 B   magic 'B','D','B','N'
-//   [4]     1 B   format version (1)
+//   [4]     1 B   format version (2)
 //   [5]     1 B   flags (reserved, must be 0)
 //   [6]     2 B   metadata block length N
 //   [8]     N B   metadata block (ignored by runtime)
-//   [8+N]   1 B   array literal count
-//           ?     array literal table: [len: u8][chars: len bytes] (null-terminated)
-//           1 B   array declaration count
-//           ?     array declaration table: [size: u16 LE] per entry
+//   [8+N]   1 B   array declaration count
+//           ?     array declaration table: per entry:
+//                   [size: u16 LE]  — element count
+//                   [initLen: u8]   — 0 = zero-init; >0 = char code initialiser bytes
+//                   [initLen bytes] — char codes (included null terminator)
 //           2 B   init_off   (0xFFFF = not defined)
 //           2 B   update_off
 //           1 B   update 'frame' param slot (0xFF = not bound)
@@ -499,12 +508,12 @@ done:
 //           1 B   draw 'input' param slot
 //           2 B   audio_off
 //           1 B   audio 't' param slot
-//           ?     bytecode stream
+//           ?     bytecode stream (PUSH_LIT instructions embed literal data inline)
 
 bool vm_load(const uint8_t *bin, uint32_t len) {
     if (len < 8) return false;
     if (bin[0] != 'B' || bin[1] != 'D' || bin[2] != 'B' || bin[3] != 'N') return false;
-    if (bin[4] != 1) return false;
+    if (bin[4] != 2) return false;
 
     const uint8_t *p   = bin + 6;
     const uint8_t *end = bin + len;
@@ -515,20 +524,10 @@ bool vm_load(const uint8_t *bin, uint32_t len) {
     p += 2 + meta_len;
     if (p > end) return false;
 
-    // Array literal table
-    if (p >= end) return false;
-    uint8_t nlit = *p++;
-    if (nlit > MAX_ARR_LITS) return false;
-    vm.arrlit_count = nlit;
-    for (int i = 0; i < nlit; i++) {
-        if (p >= end) return false;
-        uint8_t alen = *p++;
-        if (alen == 0 || alen > MAX_ARR_LIT_LEN + 1 || p + alen > end) return false;
-        memcpy(vm.arrlittab[i], p, alen);
-        vm.arrlittab[i][alen] = '\0';
-        vm.arrlitlen[i] = alen;
-        p += alen;
-    }
+    // Zero mutable state before filling in from binary
+    memset(vm.globals,  0, sizeof(vm.globals));
+    memset(vm.shadow,   0, sizeof(vm.shadow));
+    memset(vm.arrpool,  0, sizeof(vm.arrpool));
 
     // Array declaration table
     if (p >= end) return false;
@@ -536,9 +535,15 @@ bool vm_load(const uint8_t *bin, uint32_t len) {
     if (ndecl > MAX_ARR_DECLS) return false;
     vm.arrdecl_count = ndecl;
     for (int i = 0; i < ndecl; i++) {
-        if (p + 2 > end) return false;
-        uint16_t sz = ru16(p); p += 2;
+        if (p + 3 > end) return false;  // size (2) + initLen (1)
+        uint16_t sz      = ru16(p); p += 2;
+        uint8_t  initLen = *p++;
         vm.arrdeclsize[i] = (sz > MAX_ARR_ELEMS) ? MAX_ARR_ELEMS : (uint8_t)sz;
+        if (initLen > 0) {
+            if (p + initLen > end) return false;
+            for (int j = 0; j < initLen && j < vm.arrdeclsize[i]; j++)
+                vm.arrpool[i][j] = (int32_t)(*p++);
+        }
     }
 
     // Entry points + parameter slots (13 bytes) + fn table header (4 bytes) = 17 bytes
@@ -582,10 +587,6 @@ bool vm_load(const uint8_t *bin, uint32_t len) {
         }
     }
 
-    // Reset runtime state
-    memset(vm.globals,  0, sizeof(vm.globals));
-    memset(vm.shadow,   0, sizeof(vm.shadow));
-    memset(vm.arrpool,  0, sizeof(vm.arrpool));
     vm.shadow_active = 0;
     vm.rng           = 12345;
     vm.loaded        = true;

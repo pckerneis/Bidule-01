@@ -6,25 +6,26 @@
 //
 // Variable-width encoding: 1-byte opcode followed by inline operands.
 //
-//   OP_PUSH_INT      [i32 LE]          push 32-bit integer constant
-//   OP_PUSH_ARR      [u8]              push literal array reference by table index
-//   OP_LOAD          [u8]              push int global variable by slot (0–63)
-//   OP_STORE         [u8]              pop → global variable slot; T_LIT encoded as -(idx+1)
-//   OP_LOAD_ARR      [u8]              push arr_ref global; decodes: slot<0 → lit, ≥0 → mut
-//   OP_DUP                             duplicate top of stack
-//   OP_ARR_GET       [u8 slot]         pop index; push pool[slot][index] (0 if OOB)
-//   OP_ARR_SET       [u8 slot]         pop value (top), pop index; write pool[slot] (no-op if OOB)
-//   OP_ARR_LEN       [u8 slot]         push declared length of pool[slot]
-//   OP_PUSH_ARR_MUT  [u8 slot]         push mutable array reference
-//   OP_DYN_ARR_GET   [u8 slot]         pop index; push element from arr_ref stored in var slot
-//   OP_DYN_ARR_SET   [u8 slot]         pop value (top), pop index; write to arr_ref in var slot
-//   OP_DYN_ARR_LEN   [u8 slot]         push length from arr_ref stored in var slot
-//   OP_JUMP          [i16 LE]          unconditional jump, offset relative to next instruction
-//   OP_JUMP_T        [i16 LE]          pop; jump if nonzero
-//   OP_JUMP_F        [i16 LE]          pop; jump if zero
-//   OP_PEEK_JUMP_T   [i16 LE]          peek (no pop); jump if nonzero  — short-circuit ||
-//   OP_PEEK_JUMP_F   [i16 LE]          peek (no pop); jump if zero     — short-circuit &&
-//   OP_CALL          [u8 id][u8 argc]  call built-in; pops argc args; pushes result if non-void
+//   OP_PUSH_INT      [i32 LE]             push 32-bit integer constant
+//   OP_PUSH_LIT      [u8 len][len bytes]  push temporary read-only arr_ref from inline data;
+//                                         T_LIT value = bytecode offset of first char code
+//   OP_LOAD          [u8]                 push int global variable by slot (0–63)
+//   OP_STORE         [u8]                 pop → global variable slot; T_LIT stored as -(off+1)
+//   OP_LOAD_ARR      [u8]                 push arr_ref global; decodes: slot<0 → T_LIT, ≥0 → T_MUT
+//   OP_DUP                                duplicate top of stack
+//   OP_ARR_GET       [u8 slot]            pop index; push pool[slot][index] (0 if OOB)
+//   OP_ARR_SET       [u8 slot]            pop value (top), pop index; write pool[slot] (no-op if OOB)
+//   OP_ARR_LEN       [u8 slot]            push declared length of pool[slot]
+//   OP_PUSH_ARR_MUT  [u8 slot]            push mutable array reference
+//   OP_DYN_ARR_GET   [u8 slot]            pop index; push element from arr_ref stored in var slot
+//   OP_DYN_ARR_SET   [u8 slot]            pop value (top), pop index; write to arr_ref in var slot
+//   OP_DYN_ARR_LEN   [u8 slot]            push length from arr_ref stored in var slot
+//   OP_JUMP          [i16 LE]             unconditional jump, offset relative to next instruction
+//   OP_JUMP_T        [i16 LE]             pop; jump if nonzero
+//   OP_JUMP_F        [i16 LE]             pop; jump if zero
+//   OP_PEEK_JUMP_T   [i16 LE]             peek (no pop); jump if nonzero  — short-circuit ||
+//   OP_PEEK_JUMP_F   [i16 LE]             peek (no pop); jump if zero     — short-circuit &&
+//   OP_CALL          [u8 id][u8 argc]     call built-in; pops argc args; pushes result if non-void
 //
 // Compound scalar assignments compile to LOAD + op + STORE.
 // Compound pool-array assignments compile to DUP + ARR_GET + op + ARR_SET.
@@ -33,11 +34,11 @@
 typedef enum {
     // Literals
     OP_PUSH_INT      = 0x00,   // [i32]
-    OP_PUSH_ARR      = 0x01,   // [u8]  — literal array ref
+    OP_PUSH_LIT      = 0x01,   // [u8 len][len bytes] — inline temporary arr_ref data
     // Variables
     OP_LOAD          = 0x02,   // [u8]  — push int global slot
-    OP_STORE         = 0x03,   // [u8]  — pop → global slot (T_LIT encoded as -(idx+1))
-    OP_LOAD_ARR      = 0x04,   // [u8]  — push arr_ref global; decodes: <0 → lit, ≥0 → mut
+    OP_STORE         = 0x03,   // [u8]  — pop → global slot (T_LIT encoded as -(off+1))
+    OP_LOAD_ARR      = 0x04,   // [u8]  — push arr_ref global; decodes: <0 → T_LIT, ≥0 → T_MUT
     // Arithmetic
     OP_ADD           = 0x10,
     OP_SUB           = 0x11,
