@@ -446,7 +446,9 @@ class Parser {
     this.parseExpr();   // push index onto stack
     this.eatOp(']');
 
-    const opTok = this.advance();   // =  +=  -=  *=  /=
+    const opTok = this.advance();   // =  +=  -=  *=  /=  ++  --
+
+    const isIncr = opTok.value === '++' || opTok.value === '--';
 
     const _compoundOp = () => {
       switch (opTok.value) {
@@ -455,6 +457,16 @@ class Parser {
         case '*=': this.e.emit(OP.MUL); break;
         case '/=': this.e.emit(OP.DIV); break;
         case '%=': this.e.emit(OP.MOD); break;
+        case '++': this.e.emit(OP.ADD); break;
+        case '--': this.e.emit(OP.SUB); break;
+      }
+    };
+
+    const _pushRhsOrOne = () => {
+      if (isIncr) {
+        this.e.emit(OP.PUSH_INT); this.e.emitI32(1);
+      } else {
+        this.parseExpr();
       }
     };
 
@@ -464,7 +476,7 @@ class Parser {
       if (opTok.value !== '=') {
         this.e.emit(OP.DUP);
         this.e.emit(OP.ARR_GET, poolSlot & 0xFF);
-        this.parseExpr();
+        _pushRhsOrOne();
         _compoundOp();
       } else {
         this.parseExpr();
@@ -477,13 +489,13 @@ class Parser {
     const vk = this.ctx.varKind(ident.value);
     if (vk === 'int') {
       this.ctx.error(`line ${ident.line}: '${ident.value}' is an int variable; cannot use array indexing`);
-      this.parseExpr();
+      if (!isIncr) this.parseExpr();
       this.e.emit(OP.POP); this.e.emit(OP.POP);  // discard rhs and index
       return;
     }
     if (vk === null && !this.ctx.vars.has(ident.value)) {
       this.ctx.error(`line ${ident.line}: '${ident.value}' is not a declared array or arr_ref variable`);
-      this.parseExpr();
+      if (!isIncr) this.parseExpr();
       this.e.emit(OP.POP); this.e.emit(OP.POP);
       return;
     }
@@ -493,7 +505,7 @@ class Parser {
     if (opTok.value !== '=') {
       this.e.emit(OP.DUP);
       this.e.emit(OP.DYN_ARR_GET, slot & 0xFF);
-      this.parseExpr();
+      _pushRhsOrOne();
       _compoundOp();
     } else {
       this.parseExpr();
