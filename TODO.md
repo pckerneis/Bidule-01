@@ -1,3 +1,5 @@
+- fn param value-kind inférence or explicit only?
+
 - Example cart: snake
 - Example cart: flappy
 - Example cart: paint
