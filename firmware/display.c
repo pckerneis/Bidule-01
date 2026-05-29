@@ -17,9 +17,7 @@
 
 #define PHYS_W  320
 #define PHYS_H  240
-// Centred 160×120 window inside the 320×240 panel
-#define WIN_X   ((PHYS_W - DISPLAY_W) / 2)   // 80
-#define WIN_Y   ((PHYS_H - DISPLAY_H) / 2)   // 60
+// Each logical pixel is rendered as a 2×2 physical pixel block (160×2=320, 120×2=240)
 
 #define ILI9341_SWRESET  0x01
 #define ILI9341_SLPOUT   0x11
@@ -294,15 +292,22 @@ void display_init(void) {
 }
 
 void display_flush(void) {
-    set_window(WIN_X, WIN_Y, WIN_X + DISPLAY_W - 1, WIN_Y + DISPLAY_H - 1);
+    set_window(0, 0, PHYS_W - 1, PHYS_H - 1);
     cs_select(); dc_data();
     for (int y = 0; y < DISPLAY_H; y++) {
+        // Expand each logical pixel to 2 consecutive physical pixels
         for (int x = 0; x < DISPLAY_W; x++) {
-            uint16_t c = palette[fb[y][x]];
-            row_buf[x * 2    ] = (uint8_t)(c >> 8);
-            row_buf[x * 2 + 1] = (uint8_t)(c & 0xFF);
+            uint16_t c  = palette[fb[y][x]];
+            uint8_t  hi = (uint8_t)(c >> 8);
+            uint8_t  lo = (uint8_t)(c & 0xFF);
+            row_buf[x * 4    ] = hi;
+            row_buf[x * 4 + 1] = lo;
+            row_buf[x * 4 + 2] = hi;
+            row_buf[x * 4 + 3] = lo;
         }
-        spi_write_blocking(SPI_PORT, row_buf, DISPLAY_W * 2);
+        // Send the expanded row twice (2 physical rows per logical row)
+        spi_write_blocking(SPI_PORT, row_buf, PHYS_W * 2);
+        spi_write_blocking(SPI_PORT, row_buf, PHYS_W * 2);
     }
     cs_deselect();
 }

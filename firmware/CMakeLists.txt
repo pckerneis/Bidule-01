@@ -103,7 +103,7 @@ target_include_directories(bidule-01 PRIVATE
 )
 
 target_link_libraries(bidule-01
-        hardware_i2c
+        hardware_spi
         hardware_pwm
         hardware_flash
 )
