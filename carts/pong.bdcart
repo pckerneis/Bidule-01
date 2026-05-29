@@ -3,55 +3,62 @@
 // @id pong_pckerneis_1
 
 init() {
-  bx = 64
-  by = 32
-  bvx = 1
+  bx = 80
+  by = 60
+  bvx = 2
   bvy = 1
-  py = 28
-  ey = 28
+  py = 50
+  ey = 50
   score = 0
 }
 
 update(frame, input) {
-  if (btn(2)) py -= 2
-  if (btn(3)) py += 2
+  if (btn(2)) py -= 3
+  if (btn(3)) py += 3
   if (py < 0) py = 0
-  if (py > 54) py = 54
+  if (py > 100) py = 100
 
   bx += bvx
   by += bvy
 
-  if (by < 0 || by > 63) {
-    bvy = -bvy
-  }
+  if (by < 0 || by > 117) bvy = -bvy
 
-  if (bx < 6 && by >= py && by <= py + 10) {
-    bvx = 1
-    bx = max(bx, 6)
+  if (bx < 10 && by >= py && by <= py + 20) {
+    bvx = abs(bvx)
+    bx = max(bx, 10)
     score++
   }
 
-  if (by > ey + 5) ey++
-  if (by < ey + 5) ey--
+  if (by > ey + 10) ey += 2
+  if (by < ey + 10) ey -= 2
+  if (ey < 0) ey = 0
+  if (ey > 100) ey = 100
 
-  if (bx > 122 && by >= ey && by <= ey + 10) {
-    bvx = -1
-    bx = min(bx, 122)
+  if (bx > 148 && by >= ey && by <= ey + 20) {
+    bvx = 0 - abs(bvx)
+    bx = min(bx, 148)
   }
 
-  if (bx < 0 || bx > 127) {
-    bx = 64
-    by = 32
+  if (bx < 0 || bx > 159) {
+    bx = 80
+    by = 60
     bvx = -bvx
     score = 0
   }
 }
 
-draw() {
+draw(frame, input) {
   cls(0)
-  rectfill(2, py, 4, 10, 1)
-  rectfill(122, ey, 4, 10, 1)
-  rectfill(bx, by, 2, 2, 1)
 
-  print(score, 60, 2, 1)
+  // dashed centre line
+  i = 0
+  while (i < 120) {
+    pset(80, i, 8)
+    i += 4
+  }
+
+  rectfill(4, py, 4, 20, 3)       // player: green
+  rectfill(152, ey, 4, 20, 2)     // enemy: red
+  rectfill(bx, by, 3, 3, 5)       // ball: yellow
+  print(score, 72, 2, 1)
 }

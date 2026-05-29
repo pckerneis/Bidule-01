@@ -9,40 +9,39 @@ init() {
 }
 
 draw(frame) {
-    cls(0)
+  cls(0)
 
-    for(i = 0; i < 12; i++) {
-        l = 4161
-        if (i > 3) l = 54635
-        if (i > 7) l = 120683
+  for (i = 0; i < 12; i++) {
+    l = 4161
+    if (i > 3) l = 54635
+    if (i > 7) l = 120683
 
-        off = min(0, frame * 4 + i * 8 - 130)
+    off = min(0, frame * 4 + i * 8 - 130)
 
-        for(j = 0; j < 17; j++) {
-            if ((l >> j) & 1) {
-                x = 30 + j * 4 + off
-                y = 30 + i
-                line (x, y, x+4, y, 1)
-            }
-        }
+    for (j = 0; j < 17; j++) {
+      if ((l >> j) & 1) {
+        x = 46 + j * 4 + off
+        y = 54 + i
+        line(x, y, x + 4, y, 2 + i % 6)
+      }
     }
+  }
 
-    if (frame > 52) print("01", 90, 46, 1)
+  if (frame > 52) print("01", 110, 70, 5)
 }
 
 update(frame) {
-    if (frame > 90) {
-        for (i=0; i<cartcount(); i++) {
-            cartmeta(i, "id", idbuf)
-            if (streq(idbuf, "cart_loader")) {
-                loadcart(i)
-            }
-        }
+  if (frame > 90) {
+    for (i = 0; i < cartcount(); i++) {
+      cartmeta(i, "id", idbuf)
+      if (streq(idbuf, "cart_loader")) {
+        loadcart(i)
+      }
     }
+  }
 }
 
 audio(t) {
-    if (t >= 16000) return 128
-
-    return (4 * t * (arr[t >> 11] & 15)) | t>>3 | t >> (t>>10)
+  if (t >= 16000) return 128
+  return (4 * t * (arr[t >> 11] & 15)) | t >> 3 | t >> (t >> 10)
 }

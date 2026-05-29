@@ -2,10 +2,10 @@
 // @author pckerneis
 
 draw(frame) {
-    cls(1)
-    print("bytebeat :)", 2, 2, 0)
+  cls(12)
+  print("bytebeat :)", 47, 55, 5)
 }
 
 audio(t) {
-    return (((t >> 10) & 42) * t) & 255
+  return (((t >> 10) & 42) * t) & 255
 }
