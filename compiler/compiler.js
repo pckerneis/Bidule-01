@@ -60,6 +60,10 @@ const BUILTINS = {
   cartcount: { id: 17, argc: 0, returns: true,  audioOk: false },
   cartmeta:  { id: 18, argc: 3, returns: true,  audioOk: false, writableArgs: [2] },
   loadcart:  { id: 19, argc: 1, returns: true,  audioOk: false },
+  pget:      { id: 20, argc: 2, returns: true,  audioOk: false },
+  rect:      { id: 21, argc: 5, returns: false, audioOk: false },
+  setpal:    { id: 22, argc: 4, returns: false, audioOk: false },
+  getpal:    { id: 23, argc: 2, returns: true,  audioOk: false },
 };
 
 // Lifecycle function names and their canonical parameter names
@@ -1070,7 +1074,7 @@ function assembleBinary(meta, ctx, compiled, compiledUserFns) {
 
   const out = [
     0x42, 0x44, 0x42, 0x4E,          // magic 'BDBN'
-    2,                                 // format version
+    1,                                 // format version
     0,                                 // flags
     ...u16le(metaBytes.length),
     ...metaBytes,

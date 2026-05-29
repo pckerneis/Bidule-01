@@ -2,53 +2,119 @@
 #include <string.h>
 #include <stdlib.h>
 #include "pico/stdlib.h"
-#include "hardware/i2c.h"
+#include "hardware/spi.h"
 
-// --- Transport config --------------------------------------------------------
-// TODO: add SPI transport behind a compile-time flag (DISPLAY_USE_SPI).
-//       Replacing transport_init / transport_cmd / transport_flush_fb is
-//       all that is needed; the framebuffer and drawing code is transport-agnostic.
+// --- SPI / ILI9341 transport -------------------------------------------------
 
-#define I2C_PORT  i2c0
-#define I2C_SDA   4
-#define I2C_SCL   5
-#define I2C_FREQ  400000
-#define OLED_ADDR 0x3C
+#define SPI_PORT  spi0
+#define PIN_MISO  16
+#define PIN_CS    17
+#define PIN_SCK   18
+#define PIN_MOSI  19
+#define PIN_DC    20
+#define PIN_RST   21
+#define PIN_BL    22
 
-static void transport_init(void) {
-    i2c_init(I2C_PORT, I2C_FREQ);
-    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_SDA);
-    gpio_pull_up(I2C_SCL);
+#define PHYS_W  320
+#define PHYS_H  240
+// Centred 160×120 window inside the 320×240 panel
+#define WIN_X   ((PHYS_W - DISPLAY_W) / 2)   // 80
+#define WIN_Y   ((PHYS_H - DISPLAY_H) / 2)   // 60
+
+#define ILI9341_SWRESET  0x01
+#define ILI9341_SLPOUT   0x11
+#define ILI9341_GAMMASET 0x26
+#define ILI9341_DISPON   0x29
+#define ILI9341_CASET    0x2A
+#define ILI9341_PASET    0x2B
+#define ILI9341_RAMWR    0x2C
+#define ILI9341_MADCTL   0x36
+#define ILI9341_COLMOD   0x3A
+#define ILI9341_FRMCTR1  0xB1
+#define ILI9341_DFUNCTR  0xB6
+#define ILI9341_PWCTR1   0xC0
+#define ILI9341_PWCTR2   0xC1
+#define ILI9341_VMCTR1   0xC5
+#define ILI9341_VMCTR2   0xC7
+#define ILI9341_GMCTRP1  0xE0
+#define ILI9341_GMCTRN1  0xE1
+
+static inline void cs_select(void)   { gpio_put(PIN_CS, 0); }
+static inline void cs_deselect(void) { gpio_put(PIN_CS, 1); }
+static inline void dc_cmd(void)      { gpio_put(PIN_DC, 0); }
+static inline void dc_data(void)     { gpio_put(PIN_DC, 1); }
+
+static void write_cmd(uint8_t cmd) {
+    cs_select(); dc_cmd();
+    spi_write_blocking(SPI_PORT, &cmd, 1);
+    cs_deselect();
 }
 
-static void transport_cmd(uint8_t cmd) {
-    uint8_t buf[2] = {0x00, cmd};
-    i2c_write_blocking(I2C_PORT, OLED_ADDR, buf, 2, false);
+static void write_data(const uint8_t *buf, size_t len) {
+    cs_select(); dc_data();
+    spi_write_blocking(SPI_PORT, buf, len);
+    cs_deselect();
 }
 
-#define PAGES (DISPLAY_H / 8)
+static void write_byte(uint8_t b) { write_data(&b, 1); }
 
-static void transport_flush_fb(const uint8_t fb[PAGES][DISPLAY_W]) {
-    transport_cmd(0x21); transport_cmd(0);     transport_cmd(127);
-    transport_cmd(0x22); transport_cmd(0);     transport_cmd(PAGES - 1);
-    uint8_t buf[DISPLAY_W + 1];
-    buf[0] = 0x40;
-    for (int p = 0; p < PAGES; p++) {
-        memcpy(buf + 1, fb[p], DISPLAY_W);
-        i2c_write_blocking(I2C_PORT, OLED_ADDR, buf, DISPLAY_W + 1, false);
+static void set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+    write_cmd(ILI9341_CASET);
+    write_data((uint8_t[]){x0>>8, x0&0xFF, x1>>8, x1&0xFF}, 4);
+    write_cmd(ILI9341_PASET);
+    write_data((uint8_t[]){y0>>8, y0&0xFF, y1>>8, y1&0xFF}, 4);
+    write_cmd(ILI9341_RAMWR);
+}
+
+// --- Framebuffer and CLUT ----------------------------------------------------
+
+static uint8_t  fb[DISPLAY_H][DISPLAY_W];   // 19 200 bytes, 8-bit palette indices
+static uint16_t palette[256];               // 512 bytes, RGB565 entries
+static uint8_t  row_buf[PHYS_W * 2];        // 640 bytes, reused for flush and init clear
+
+static uint16_t rgb565(int r, int g, int b) {
+    return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | ((b & 0xF8) >> 3));
+}
+
+static void init_palette(void) {
+    // 0-15: fixed game palette
+    static const uint8_t pal16[16][3] = {
+        {  0,   0,   0},   //  0 black
+        {255, 255, 255},   //  1 white
+        {255,  40,  40},   //  2 red
+        { 40, 200,  40},   //  3 green
+        { 40,  80, 255},   //  4 blue
+        {255, 230,   0},   //  5 yellow
+        {  0, 220, 220},   //  6 cyan
+        {220,  40, 220},   //  7 magenta
+        { 70,  70,  70},   //  8 dark grey
+        {185, 185, 185},   //  9 light grey
+        {255, 140,   0},   // 10 orange
+        {  0, 110,   0},   // 11 dark green
+        {  0,   0, 130},   // 12 navy
+        {255, 120, 180},   // 13 pink
+        {120,   0, 200},   // 14 purple
+        {140,  80,  20},   // 15 brown
+    };
+    for (int i = 0; i < 16; i++)
+        palette[i] = rgb565(pal16[i][0], pal16[i][1], pal16[i][2]);
+
+    // 16-231: 6×6×6 colour cube (xterm-compatible)
+    for (int i = 0; i < 216; i++) {
+        int r = i / 36,       rv = r ? r * 40 + 55 : 0;
+        int g = (i / 6) % 6, gv = g ? g * 40 + 55 : 0;
+        int b = i % 6,        bv = b ? b * 40 + 55 : 0;
+        palette[16 + i] = rgb565(rv, gv, bv);
+    }
+
+    // 232-255: greyscale ramp
+    for (int i = 0; i < 24; i++) {
+        int v = i * 10 + 8;
+        palette[232 + i] = rgb565(v, v, v);
     }
 }
 
-// --- Framebuffer -------------------------------------------------------------
-
-static uint8_t fb[PAGES][DISPLAY_W];
-
-// --- Font --------------------------------------------------------------------
-// Monogram by Datagoblin — ASCII 32-126, 5x9px (§3.3)
-// Source: third_parties/monogram/bitmap/monogram-bitmap.json, rows [3:12]
-// Each entry: 9 bytes, one per row top-to-bottom, bit 0 = leftmost column.
+// --- Font (Monogram by Datagoblin, ASCII 32-126, 5×9 px) ---------------------
 
 #define FONT_W 5
 #define FONT_H 9
@@ -154,9 +220,8 @@ static const uint8_t font[][FONT_H] = {
 // --- Drawing helpers ---------------------------------------------------------
 
 static void fb_pixel(int x, int y, int c) {
-    if ((unsigned)x >= DISPLAY_W || (unsigned)y >= DISPLAY_H) return;
-    if (c) fb[y / 8][x] |=  (1u << (y % 8));
-    else   fb[y / 8][x] &= ~(1u << (y % 8));
+    if ((unsigned)x < DISPLAY_W && (unsigned)y < DISPLAY_H)
+        fb[y][x] = (uint8_t)(c & 0xFF);
 }
 
 static int draw_char(int x, int y, char ch, int c) {
@@ -173,42 +238,100 @@ static int draw_char(int x, int y, char ch, int c) {
 // --- Public API --------------------------------------------------------------
 
 void display_init(void) {
-    transport_init();
-    sleep_ms(100);
-    transport_cmd(0xAE);
-    transport_cmd(0xD5); transport_cmd(0x80);
-    transport_cmd(0xA8); transport_cmd(0x3F);
-    transport_cmd(0xD3); transport_cmd(0x00);
-    transport_cmd(0x40);
-    transport_cmd(0x8D); transport_cmd(0x14);
-    transport_cmd(0x20); transport_cmd(0x00);
-    transport_cmd(0xA1);
-    transport_cmd(0xC8);
-    transport_cmd(0xDA); transport_cmd(0x12);
-    transport_cmd(0x81); transport_cmd(0xCF);
-    transport_cmd(0xD9); transport_cmd(0xF1);
-    transport_cmd(0xDB); transport_cmd(0x40);
-    transport_cmd(0xA4);
-    transport_cmd(0xA6);
-    transport_cmd(0xAF);
+    spi_init(SPI_PORT, 40 * 1000 * 1000);
+    spi_set_format(SPI_PORT, 8, SPI_CPOL_1, SPI_CPHA_1, SPI_MSB_FIRST);
+    gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
+    gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
+    gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
+
+    gpio_init(PIN_CS);  gpio_set_dir(PIN_CS,  GPIO_OUT); gpio_put(PIN_CS,  1);
+    gpio_init(PIN_DC);  gpio_set_dir(PIN_DC,  GPIO_OUT); gpio_put(PIN_DC,  1);
+    gpio_init(PIN_RST); gpio_set_dir(PIN_RST, GPIO_OUT); gpio_put(PIN_RST, 1);
+    gpio_init(PIN_BL);  gpio_set_dir(PIN_BL,  GPIO_OUT); gpio_put(PIN_BL,  1);
+
+    // ILI9341 reset and init
+    gpio_put(PIN_RST, 1); sleep_ms(10);
+    gpio_put(PIN_RST, 0); sleep_ms(10);
+    gpio_put(PIN_RST, 1); sleep_ms(120);
+
+    write_cmd(ILI9341_SWRESET); sleep_ms(120);
+
+    write_cmd(ILI9341_PWCTR1); write_byte(0x23);
+    write_cmd(ILI9341_PWCTR2); write_byte(0x10);
+    write_cmd(ILI9341_VMCTR1); write_byte(0x3E); write_byte(0x28);
+    write_cmd(ILI9341_VMCTR2); write_byte(0x86);
+
+    // Landscape (MV=1), BGR order — adjust if colours are swapped on your panel
+    write_cmd(ILI9341_MADCTL); write_byte(0x28);
+
+    // 16 bits/pixel RGB565
+    write_cmd(ILI9341_COLMOD); write_byte(0x55);
+
+    write_cmd(ILI9341_FRMCTR1); write_byte(0x00); write_byte(0x18);
+    write_cmd(ILI9341_DFUNCTR); write_byte(0x08); write_byte(0x82); write_byte(0x27);
+    write_cmd(ILI9341_GAMMASET); write_byte(0x01);
+
+    write_cmd(ILI9341_GMCTRP1);
+    write_data((uint8_t[]){0x0F,0x31,0x2B,0x0C,0x0E,0x08,0x4E,0xF1,
+                            0x37,0x07,0x10,0x03,0x0E,0x09,0x00}, 15);
+    write_cmd(ILI9341_GMCTRN1);
+    write_data((uint8_t[]){0x00,0x0E,0x14,0x03,0x11,0x07,0x31,0xC1,
+                            0x48,0x08,0x0F,0x0C,0x31,0x36,0x0F}, 15);
+
+    write_cmd(ILI9341_SLPOUT); sleep_ms(120);
+    write_cmd(ILI9341_DISPON);
+
+    // Clear entire physical panel to black (row_buf is zero-initialised)
+    memset(row_buf, 0, sizeof(row_buf));
+    set_window(0, 0, PHYS_W - 1, PHYS_H - 1);
+    cs_select(); dc_data();
+    for (int y = 0; y < PHYS_H; y++)
+        spi_write_blocking(SPI_PORT, row_buf, PHYS_W * 2);
+    cs_deselect();
+
+    init_palette();
+    memset(fb, 0, sizeof(fb));
 }
 
 void display_flush(void) {
-    transport_flush_fb(fb);
+    set_window(WIN_X, WIN_Y, WIN_X + DISPLAY_W - 1, WIN_Y + DISPLAY_H - 1);
+    cs_select(); dc_data();
+    for (int y = 0; y < DISPLAY_H; y++) {
+        for (int x = 0; x < DISPLAY_W; x++) {
+            uint16_t c = palette[fb[y][x]];
+            row_buf[x * 2    ] = (uint8_t)(c >> 8);
+            row_buf[x * 2 + 1] = (uint8_t)(c & 0xFF);
+        }
+        spi_write_blocking(SPI_PORT, row_buf, DISPLAY_W * 2);
+    }
+    cs_deselect();
 }
 
 void display_cls(int c) {
-    memset(fb, c ? 0xFF : 0x00, sizeof(fb));
+    memset(fb, (uint8_t)(c & 0xFF), sizeof(fb));
 }
 
 void display_pset(int x, int y, int c) {
     fb_pixel(x, y, c);
 }
 
+int display_pget(int x, int y) {
+    if ((unsigned)x < DISPLAY_W && (unsigned)y < DISPLAY_H)
+        return fb[y][x];
+    return 0;
+}
+
 void display_rectfill(int x, int y, int w, int h, int c) {
     for (int py = y; py < y + h; py++)
         for (int px = x; px < x + w; px++)
             fb_pixel(px, py, c);
+}
+
+void display_rect(int x, int y, int w, int h, int c) {
+    display_line(x,         y,         x + w - 1, y,         c);
+    display_line(x,         y + h - 1, x + w - 1, y + h - 1, c);
+    display_line(x,         y + 1,     x,         y + h - 2, c);
+    display_line(x + w - 1, y + 1,     x + w - 1, y + h - 2, c);
 }
 
 void display_line(int x0, int y0, int x1, int y1, int c) {
@@ -225,6 +348,22 @@ void display_line(int x0, int y0, int x1, int y1, int c) {
 }
 
 void display_print(int x, int y, const char *s, int c) {
-    while (*s && x + 5 < DISPLAY_W)
+    while (*s && x < DISPLAY_W)
         x = draw_char(x, y, *s++, c);
+}
+
+void display_setpal(int i, int r, int g, int b) {
+    if ((unsigned)i < 256)
+        palette[i] = rgb565(r & 0xFF, g & 0xFF, b & 0xFF);
+}
+
+int display_getpal(int i, int chan) {
+    if ((unsigned)i >= 256) return 0;
+    uint16_t c = palette[i];
+    switch (chan) {
+        case 0: return ((c >> 11) & 0x1F) << 3;   // R: 5 bits → 8 bits (approx)
+        case 1: return ((c >>  5) & 0x3F) << 2;   // G: 6 bits → 8 bits
+        case 2: return ((c      ) & 0x1F) << 3;   // B: 5 bits → 8 bits
+    }
+    return 0;
 }

@@ -1,0 +1,38 @@
+// @name   PaletteView
+// @author Bidule
+// @id     palette-view-v1
+
+// Navigate the 256-colour CLUT with the D-pad.
+// Each cell is one palette index. Selected index shown at the bottom.
+
+cx = 0
+cy = 0
+sel = 0
+i = 0
+
+update(frame, input) {
+  if (btnp(1)) cx = (cx + 1) % 16
+  if (btnp(0)) cx = (cx + 15) % 16
+  if (btnp(3)) cy = (cy + 1) % 16
+  if (btnp(2)) cy = (cy + 15) % 16
+  sel = cy * 16 + cx
+}
+
+draw(frame, input) {
+  cls(0)
+
+  // 16x16 grid of colour swatches, each 9x6 px (fits in 144x96)
+  i = 0
+  while (i < 256) {
+    rectfill(i % 16 * 10, i / 16 * 7, 9, 6, i)
+    i++
+  }
+
+  // cursor outline around selected cell
+  rect(cx * 10 - 1, cy * 7 - 1, 11, 8, 1)
+
+  // status bar at bottom: clear strip, show index, show colour swatch
+  rectfill(0, 111, 160, 9, 0)
+  print(sel, 2, 111, 1)
+  rectfill(55, 111, 50, 9, sel)
+}

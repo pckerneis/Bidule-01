@@ -115,6 +115,11 @@ typedef enum {
     BUILTIN_CARTCOUNT  = 17,
     BUILTIN_CARTMETA   = 18,
     BUILTIN_LOADCART   = 19,
+    // Graphics extras (§6.3 – §6.5)
+    BUILTIN_PGET       = 20,
+    BUILTIN_RECT       = 21,
+    BUILTIN_SETPAL     = 22,
+    BUILTIN_GETPAL     = 23,
 } BuiltinId;
 
 // ─── Public API ───────────────────────────────────────────────────────────────

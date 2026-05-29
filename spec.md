@@ -2,7 +2,6 @@
 
 > **Status: Draft / Work in Progress**
 > This document is the authoritative specification for the Bidule 01 platform.
-> Sections marked 🔲 are placeholders pending design decisions.
 
 **Spec version:** 0.7  
 **Last updated:** 2026-05-29

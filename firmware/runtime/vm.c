@@ -268,6 +268,18 @@ static Value call_builtin(uint8_t id, Value *a) {
         return (Value){ VALUE_VOID };
     }
 
+    // Graphics extras
+    case BUILTIN_PGET:
+        return (Value){ VALUE_INT, display_pget(a[0].i, a[1].i) };
+    case BUILTIN_RECT:
+        display_rect(a[0].i, a[1].i, a[2].i, a[3].i, a[4].i);
+        return (Value){ VALUE_VOID };
+    case BUILTIN_SETPAL:
+        display_setpal(a[0].i, a[1].i, a[2].i, a[3].i);
+        return (Value){ VALUE_VOID };
+    case BUILTIN_GETPAL:
+        return (Value){ VALUE_INT, display_getpal(a[0].i, a[1].i) };
+
     default:
         return (Value){ VALUE_VOID };
     }
@@ -490,7 +502,7 @@ done:
 // Binary format (.bdb) — all multi-byte integers little-endian:
 //
 //   [0]     4 B   magic 'B','D','B','N'
-//   [4]     1 B   format version (2)
+//   [4]     1 B   format version (1)
 //   [5]     1 B   flags (reserved, must be 0)
 //   [6]     2 B   metadata block length N
 //   [8]     N B   metadata block (ignored by runtime)
@@ -513,7 +525,7 @@ done:
 bool vm_load(const uint8_t *bin, uint32_t len) {
     if (len < 8) return false;
     if (bin[0] != 'B' || bin[1] != 'D' || bin[2] != 'B' || bin[3] != 'N') return false;
-    if (bin[4] != 2) return false;
+    if (bin[4] != 1) return false;
 
     const uint8_t *p   = bin + 6;
     const uint8_t *end = bin + len;
