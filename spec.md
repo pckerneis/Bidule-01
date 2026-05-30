@@ -527,7 +527,21 @@ Core 1 spins at ~45 µs per sample. If `audio(t)` takes longer, the effective ra
 - Firmware framebuffer: 160 × 120 × 1 byte (palette indices) = **19 200 bytes (~19 KB)**
 - CLUT: 256 × 2 bytes = **512 bytes** (RGB565 entries, firmware-managed)
 - Flush sequence: CPU or DMA expands 8-bit index row → 16-bit RGB565 row → SPI to display; or pre-expand the full frame to a 320×240 line-doubled buffer (38.4 KB) before DMA transfer.
-- Interface: SPI. GPIO assignments: TBD.
+- Interface: SPI (SPI0, 10 MHz, Mode 3 — CPOL=1, CPHA=1).
+
+**ILI9341 wiring (Raspberry Pi Pico):**
+
+| ILI9341 pin | Pico GPIO | Notes |
+|-------------|-----------|-------|
+| VCC         | 3V3       |       |
+| GND         | GND       |       |
+| CS          | GP17      |       |
+| RST         | GP21      |       |
+| DC          | GP20      | Data/Command select |
+| MOSI / SDA  | GP19      |       |
+| SCK / CLK   | GP18      |       |
+| BL / LED    | GP22      | Driven high in firmware |
+| MISO        | —         | Not connected (display is write-only) |
 
 #### 14.7 Memory Budget
 
