@@ -171,6 +171,49 @@ export function drawRect(fb, x, y, w, h, c) {
   for (let py = y; py < y+h; py++) { fbPixel(fb, x,     py, c); fbPixel(fb, x+w-1, py, c); }
 }
 
+// ─── Sprite drawing ───────────────────────────────────────────────────────────
+//
+// tiles: Uint8Array of 512×64 bytes (palette-index pixels, 8×8 per tile).
+// flags bit 0 = flip horizontally, bit 1 = flip vertically.
+// Palette index 0 is transparent and never written.
+
+const SPR_TILE_W = 8, SPR_TILE_H = 8;
+const SPR_TILES_X = 32;   // 256 / 8
+
+export function drawSpr(fb, tiles, n, x, y, flags) {
+  if (!tiles || n < 0 || n >= 512) return;
+  x = x|0; y = y|0;
+  const flip_x = flags & 1, flip_y = (flags >> 1) & 1;
+  const base = n * SPR_TILE_W * SPR_TILE_H;
+  for (let ty = 0; ty < SPR_TILE_H; ty++) {
+    const sy = flip_y ? SPR_TILE_H - 1 - ty : ty;
+    for (let tx = 0; tx < SPR_TILE_W; tx++) {
+      const idx = tiles[base + sy * SPR_TILE_W + (flip_x ? SPR_TILE_W - 1 - tx : tx)];
+      if (idx !== 0) fbPixel(fb, x + tx, y + ty, idx);
+    }
+  }
+}
+
+export function drawSspr(fb, tiles, sx, sy, sw, sh, dx, dy, flags) {
+  if (!tiles) return;
+  sx=sx|0; sy=sy|0; sw=sw|0; sh=sh|0; dx=dx|0; dy=dy|0;
+  const flip_x = flags & 1, flip_y = (flags >> 1) & 1;
+  for (let ty = 0; ty < sh; ty++) {
+    const src_y = sy + (flip_y ? sh - 1 - ty : ty);
+    if (src_y < 0 || src_y >= 128) continue;
+    for (let tx = 0; tx < sw; tx++) {
+      const src_x = sx + (flip_x ? sw - 1 - tx : tx);
+      if (src_x < 0 || src_x >= 256) continue;
+      const tc  = (src_x / SPR_TILE_W) | 0;
+      const tr  = (src_y / SPR_TILE_H) | 0;
+      const ti  = tr * SPR_TILES_X + tc;
+      const idx = tiles[ti * SPR_TILE_W * SPR_TILE_H +
+                        (src_y % SPR_TILE_H) * SPR_TILE_W + (src_x % SPR_TILE_W)];
+      if (idx !== 0) fbPixel(fb, dx + tx, dy + ty, idx);
+    }
+  }
+}
+
 // Blit the 8-bit indexed framebuffer to an ImageData at the given pixel scale.
 // palette is a Uint8Array of 256*3 bytes: [R0,G0,B0, R1,G1,B1, ...].
 export function blitToImageData(fb, imgData, scale, palette) {

@@ -120,6 +120,9 @@ typedef enum {
     BUILTIN_RECT       = 21,
     BUILTIN_SETPAL     = 22,
     BUILTIN_GETPAL     = 23,
+    // Sprites (§6.6)
+    BUILTIN_SPR        = 24,   // spr(n, x, y, flags)
+    BUILTIN_SSPR       = 25,   // sspr(sx, sy, sw, sh, dx, dy, flags)
 } BuiltinId;
 
 // ─── Public API ───────────────────────────────────────────────────────────────

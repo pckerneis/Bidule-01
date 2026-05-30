@@ -30,6 +30,8 @@ const B = {
   SAVE:15, LOAD_SLOT:16,
   CARTCOUNT:17, CARTMETA:18, LOADCART:19,
   PGET:20, RECT:21, SETPAL:22, GETPAL:23,
+  // Sprites (§6.6)
+  SPR:24, SSPR:25,
 };
 
 // ─── Value type tags (stack only; globals array is plain Int32Array) ──────────
@@ -67,6 +69,7 @@ export class VM {
     if (bin[0]!==0x42||bin[1]!==0x44||bin[2]!==0x42||bin[3]!==0x4E) return false;
     if (bin[4] !== 1) return false;
 
+    const flags = bin[5];
     let p = 6;
     const r8  = () => bin[p++];
     const r16 = () => { const v = bin[p]|(bin[p+1]<<8); p+=2; return v; };
@@ -104,6 +107,18 @@ export class VM {
     // User function table header
     const fnCount    = r16();
     const fnTableOff = r16();
+
+    // Sprite section (flags bit 0): 256×3 palette bytes + 512×64 tile bytes
+    const SPR_PAL_BYTES  = 256 * 3;
+    const SPR_TILE_BYTES = 512 * 64;
+    if (flags & 0x01) {
+      this._spritePalette = bin.slice(p, p + SPR_PAL_BYTES);
+      this._spriteTiles   = bin.slice(p + SPR_PAL_BYTES, p + SPR_PAL_BYTES + SPR_TILE_BYTES);
+      p += SPR_PAL_BYTES + SPR_TILE_BYTES;
+    } else {
+      this._spritePalette = null;
+      this._spriteTiles   = null;
+    }
 
     // Bytecode stream
     this._code    = bin.slice(p);
@@ -450,6 +465,9 @@ export class VM {
     case B.RECT:   cb.rect?.(a[0].v, a[1].v, a[2].v, a[3].v, a[4].v); break;
     case B.SETPAL: cb.setpal?.(a[0].v, a[1].v, a[2].v, a[3].v); break;
     case B.GETPAL: return I(cb.getpal?.(a[0].v, a[1].v) ?? 0);
+
+    case B.SPR:  cb.spr?.(a[0].v, a[1].v, a[2].v, a[3].v);                          break;
+    case B.SSPR: cb.sspr?.(a[0].v, a[1].v, a[2].v, a[3].v, a[4].v, a[5].v, a[6].v); break;
 
     case B.CARTCOUNT: return I(cb.cartcount?.() ?? 0);
     case B.CARTMETA: {

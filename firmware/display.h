@@ -18,3 +18,14 @@ void display_line(int x0, int y0, int x1, int y1, int c);
 void display_print(int x, int y, const char *s, int c);
 void display_setpal(int i, int r, int g, int b);
 int  display_getpal(int i, int chan);
+
+// Sprite sheet — called from vm_load() when flags bit 0 is set.
+// pal_rgb:    256×3 bytes (R, G, B per entry); replaces the current palette.
+// tile_data:  tile_count × 64 bytes (8×8 palette-index pixels, row-major).
+void display_load_sprites(const uint8_t *pal_rgb, const uint8_t *tile_data, uint16_t tile_count);
+
+// spr(n, x, y, flags) — draw 8×8 sprite n at screen (x, y).
+void display_spr(int n, int x, int y, int flags);
+
+// sspr(sx, sy, sw, sh, dx, dy, flags) — blit a rect from the sprite sheet.
+void display_sspr(int sx, int sy, int sw, int sh, int dx, int dy, int flags);

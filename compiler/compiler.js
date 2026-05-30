@@ -64,6 +64,9 @@ const BUILTINS = {
   rect:      { id: 21, argc: 5, returns: false, audioOk: false },
   setpal:    { id: 22, argc: 4, returns: false, audioOk: false },
   getpal:    { id: 23, argc: 2, returns: true,  audioOk: false },
+  // Sprites (§6.6)
+  spr:       { id: 24, argc: 4, returns: false, audioOk: false },
+  sspr:      { id: 25, argc: 7, returns: false, audioOk: false },
 };
 
 // Lifecycle function names and their canonical parameter names
@@ -1021,7 +1024,7 @@ function compileFunction(name, params, bodyTokens, ctx, isUserFn = false, paramA
 
 function u16le(n) { return [n & 0xFF, (n >> 8) & 0xFF]; }
 
-function assembleBinary(meta, ctx, compiled, compiledUserFns) {
+function assembleBinary(meta, ctx, compiled, compiledUserFns, sprites = null) {
   const metaText  = Object.entries(meta).map(([k, v]) => `@${k} ${v}`).join('\n');
   const metaBytes = Array.from(metaText, c => c.charCodeAt(0) & 0x7F);
 
@@ -1072,10 +1075,13 @@ function assembleBinary(meta, ctx, compiled, compiledUserFns) {
 
   const fn_count = compiledUserFns.length;
 
+  // flags bit 0: sprite section present (palette + tile data follows fn table header)
+  const flags = sprites ? 0x01 : 0x00;
+
   const out = [
     0x42, 0x44, 0x42, 0x4E,          // magic 'BDBN'
     1,                                 // format version
-    0,                                 // flags
+    flags,                             // flags (bit 0 = sprites present)
     ...u16le(metaBytes.length),
     ...metaBytes,
     ctx.arrayDecls.length,             // array declaration count
@@ -1086,8 +1092,12 @@ function assembleBinary(meta, ctx, compiled, compiledUserFns) {
     ...u16le(offsets.audio),  params.audio.t,
     ...u16le(fn_count),
     ...u16le(fn_table_off),
-    ...code,
   ];
+
+  // Sprite section: 256×3 palette bytes followed by 512×64 tile bytes
+  if (sprites) out.push(...sprites);
+
+  out.push(...code);
 
   return new Uint8Array(out);
 }
@@ -1097,11 +1107,14 @@ function assembleBinary(meta, ctx, compiled, compiledUserFns) {
 /**
  * Compile a Bidule 01 source cart (.bdcart) to a binary cart (.bdb).
  *
- * @param  {string} source  - Source text of the cart.
+ * @param  {string}     source          - Source text of the cart.
+ * @param  {object}     [opts]
+ * @param  {Uint8Array} [opts.sprites]  - Optional packed sprite data (768 palette bytes +
+ *                                        32768 tile bytes) extracted from a .sprites.png file.
  * @returns {{ binary: Uint8Array|null, errors: string[], warnings: string[] }}
  *   `binary` is null when there are compile errors.
  */
-export function compile(source) {
+export function compile(source, { sprites = null } = {}) {
   const ctx    = new Ctx();
   const tokens = lex(source);
   let pos = 0;
@@ -1347,6 +1360,6 @@ export function compile(source) {
     return { binary: null, errors: ctx.errors, warnings: ctx.warnings };
   }
 
-  const binary = assembleBinary(meta, ctx, compiled, compiledUserFns);
+  const binary = assembleBinary(meta, ctx, compiled, compiledUserFns, sprites);
   return { binary, errors: [], warnings: ctx.warnings };
 }

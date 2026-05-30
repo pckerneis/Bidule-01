@@ -280,6 +280,14 @@ static Value call_builtin(uint8_t id, Value *a) {
     case BUILTIN_GETPAL:
         return (Value){ VALUE_INT, display_getpal(a[0].i, a[1].i) };
 
+    // Sprites
+    case BUILTIN_SPR:
+        display_spr(a[0].i, a[1].i, a[2].i, a[3].i);
+        return (Value){ VALUE_VOID };
+    case BUILTIN_SSPR:
+        display_sspr(a[0].i, a[1].i, a[2].i, a[3].i, a[4].i, a[5].i, a[6].i);
+        return (Value){ VALUE_VOID };
+
     default:
         return (Value){ VALUE_VOID };
     }
@@ -527,6 +535,7 @@ bool vm_load(const uint8_t *bin, uint32_t len) {
     if (bin[0] != 'B' || bin[1] != 'D' || bin[2] != 'B' || bin[3] != 'N') return false;
     if (bin[4] != 1) return false;
 
+    const uint8_t flags = bin[5];
     const uint8_t *p   = bin + 6;
     const uint8_t *end = bin + len;
 
@@ -571,6 +580,15 @@ bool vm_load(const uint8_t *bin, uint32_t len) {
     vm.param_audio_t      = *p++;
     uint16_t fn_count     = ru16(p); p += 2;
     uint16_t fn_table_off = ru16(p); p += 2;
+
+    // Sprite section (flags bit 0): 256×3 palette bytes + 512×64 tile bytes
+    if (flags & 0x01) {
+        const uint32_t SPR_PAL_BYTES  = 256 * 3;
+        const uint32_t SPR_TILE_BYTES = 512 * 64;
+        if (p + SPR_PAL_BYTES + SPR_TILE_BYTES > end) return false;
+        display_load_sprites(p, p + SPR_PAL_BYTES, 512);
+        p += SPR_PAL_BYTES + SPR_TILE_BYTES;
+    }
 
     // Bytecode
     uint32_t code_len = (uint32_t)(end - p);

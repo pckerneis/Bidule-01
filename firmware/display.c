@@ -215,6 +215,20 @@ static const uint8_t font[][FONT_H] = {
     { 0, 0,18,13, 0, 0, 0, 0, 0},  // 126 '~'
 };
 
+// --- Sprite storage ----------------------------------------------------------
+
+#define SPR_SHEET_W   256   // sprite sheet width in pixels
+#define SPR_SHEET_H   128   // sprite sheet height in pixels
+#define SPR_TILE_W    8     // tile width in pixels
+#define SPR_TILE_H    8     // tile height in pixels
+#define SPR_TILES_X   (SPR_SHEET_W / SPR_TILE_W)   // 32
+#define SPR_TILES_Y   (SPR_SHEET_H / SPR_TILE_H)   // 16
+#define SPR_TILE_COUNT (SPR_TILES_X * SPR_TILES_Y)  // 512
+#define SPR_TILE_BYTES (SPR_TILE_W * SPR_TILE_H)    // 64
+
+static uint8_t spr_tiles[SPR_TILE_COUNT][SPR_TILE_BYTES];
+static bool    spr_loaded = false;
+
 // --- Drawing helpers ---------------------------------------------------------
 
 static void fb_pixel(int x, int y, int c) {
@@ -371,4 +385,46 @@ int display_getpal(int i, int chan) {
         case 2: return ((c      ) & 0x1F) << 3;   // B: 5 bits → 8 bits
     }
     return 0;
+}
+
+void display_load_sprites(const uint8_t *pal_rgb, const uint8_t *tile_data, uint16_t tile_count) {
+    // Replace palette with sprite sheet palette
+    for (int i = 0; i < 256; i++)
+        palette[i] = rgb565(pal_rgb[i*3], pal_rgb[i*3+1], pal_rgb[i*3+2]);
+
+    // Copy tile data
+    uint16_t n = tile_count < SPR_TILE_COUNT ? tile_count : SPR_TILE_COUNT;
+    memcpy(spr_tiles, tile_data, (size_t)n * SPR_TILE_BYTES);
+    spr_loaded = true;
+}
+
+void display_spr(int n, int x, int y, int flags) {
+    if (!spr_loaded || (unsigned)n >= SPR_TILE_COUNT) return;
+    const uint8_t *tile = spr_tiles[n];
+    int flip_x = flags & 1, flip_y = (flags >> 1) & 1;
+    for (int ty = 0; ty < SPR_TILE_H; ty++) {
+        int sy = flip_y ? SPR_TILE_H - 1 - ty : ty;
+        for (int tx = 0; tx < SPR_TILE_W; tx++) {
+            uint8_t idx = tile[sy * SPR_TILE_W + (flip_x ? SPR_TILE_W - 1 - tx : tx)];
+            if (idx != 0) fb_pixel(x + tx, y + ty, idx);
+        }
+    }
+}
+
+void display_sspr(int sx, int sy, int sw, int sh, int dx, int dy, int flags) {
+    if (!spr_loaded) return;
+    int flip_x = flags & 1, flip_y = (flags >> 1) & 1;
+    for (int ty = 0; ty < sh; ty++) {
+        int src_y = sy + (flip_y ? sh - 1 - ty : ty);
+        if (src_y < 0 || src_y >= SPR_SHEET_H) continue;
+        for (int tx = 0; tx < sw; tx++) {
+            int src_x = sx + (flip_x ? sw - 1 - tx : tx);
+            if (src_x < 0 || src_x >= SPR_SHEET_W) continue;
+            int tc  = src_x / SPR_TILE_W;
+            int tr  = src_y / SPR_TILE_H;
+            int ti  = tr * SPR_TILES_X + tc;
+            uint8_t idx = spr_tiles[ti][(src_y % SPR_TILE_H) * SPR_TILE_W + (src_x % SPR_TILE_W)];
+            if (idx != 0) fb_pixel(dx + tx, dy + ty, idx);
+        }
+    }
 }

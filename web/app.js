@@ -5,7 +5,9 @@ import { VM }                                          from './vm.js';
 import { compile }                                     from '../compiler/compiler.js';
 import { drawCls, drawPset, drawRectfill, drawLine,
          drawPrint, drawRect, drawPget,
-         blitToImageData }                             from './font.js';
+         drawSpr, drawSspr,
+         blitToImageData }                             from './draw.js';
+import { parsePNG, packSpriteSheet }                   from './png.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -81,6 +83,9 @@ const vm = new VM({
   print:    (text,x,y,c)    => drawPrint(fb, text, x, y, c),
   setpal:   (i,r,g,b)       => setpalEntry(i, r, g, b),
   getpal:   (i,ch)          => (i>=0&&i<=255&&ch>=0&&ch<=2) ? palette[i*3+ch] : 0,
+
+  spr:  (n,x,y,flags)              => drawSpr(fb, vm._spriteTiles, n, x, y, flags),
+  sspr: (sx,sy,sw,sh,dx,dy,flags)  => drawSspr(fb, vm._spriteTiles, sx, sy, sw, sh, dx, dy, flags),
 
   save:  (slot, val) => persist.save(slot, val),
   load:  slot        => persist.load(slot),
@@ -166,6 +171,11 @@ function loadAndRun(binary) {
   if (running) stopLoop();
   resetPalette();
   if (!vm.load(binary)) { showError('Invalid cart binary'); return false; }
+  // Apply sprite sheet palette when the cart bundles one, before init() runs.
+  if (vm._spritePalette) {
+    const sp = vm._spritePalette;
+    for (let i = 0; i < 256; i++) setpalEntry(i, sp[i*3], sp[i*3+1], sp[i*3+2]);
+  }
   currentBinary = binary;
   audioLoad(binary);
   frame = 0;
@@ -316,15 +326,32 @@ function blit() {
 // ─── File handling ────────────────────────────────────────────────────────────
 
 async function handleFiles(files) {
+  // Pre-load any .sprites.png files dropped alongside carts, keyed by stem.
+  const pngMap = new Map();
+  for (const file of files) {
+    if (!file.name.endsWith('.sprites.png')) continue;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const { width, height, plte, pixels } = await parsePNG(bytes);
+      const stem = file.name.slice(0, -'.sprites.png'.length);
+      pngMap.set(stem, packSpriteSheet(width, height, plte, pixels));
+    } catch (e) {
+      console.warn(`sprite sheet '${file.name}':`, e);
+    }
+  }
+
   let added = 0;
   for (const file of files) {
+    if (file.name.endsWith('.sprites.png')) continue;
     const buf = await file.arrayBuffer();
     const bin = new Uint8Array(buf);
     let binary = bin;
 
     if (file.name.endsWith('.bdcart') || bin[0] !== 0x42) {
-      const src = new TextDecoder().decode(bin);
-      const { binary: compiled, errors } = compile(src);
+      const src  = new TextDecoder().decode(bin);
+      const stem = file.name.replace(/\.bdcart$/, '');
+      const sprites = pngMap.get(stem) ?? null;
+      const { binary: compiled, errors } = compile(src, { sprites });
       if (errors.length) { showError(errors.join('\n')); continue; }
       binary = compiled;
     }
@@ -360,7 +387,19 @@ async function autoLoadCarts() {
       let binary = bin;
 
       if (name.endsWith('.bdcart')) {
-        const { binary: compiled, errors } = compile(new TextDecoder().decode(bin));
+        const stem = name.replace(/\.bdcart$/, '');
+        let sprites = null;
+        try {
+          const pr = await fetch(`/carts/${stem}.sprites.png`);
+          if (pr.ok) {
+            const pngBytes = new Uint8Array(await pr.arrayBuffer());
+            const { width, height, plte, pixels } = await parsePNG(pngBytes);
+            sprites = packSpriteSheet(width, height, plte, pixels);
+          }
+        } catch (e) {
+          console.warn(`sprite sheet for '${name}':`, e);
+        }
+        const { binary: compiled, errors } = compile(new TextDecoder().decode(bin), { sprites });
         if (errors.length) { console.warn(name, errors); continue; }
         binary = compiled;
       }

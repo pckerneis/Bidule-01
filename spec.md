@@ -3,8 +3,8 @@
 > **Status: Draft / Work in Progress**
 > This document is the authoritative specification for the Bidule 01 platform.
 
-**Spec version:** 0.7  
-**Last updated:** 2026-05-29
+**Spec version:** 0.8  
+**Last updated:** 2026-05-30
 
 ---
 
@@ -243,6 +243,36 @@ getpal(i, chan) → int      // read back a palette entry; chan: 0=R, 1=G, 2=B
 - The firmware stores entries as RGB565 internally; `getpal` returns the value after round-tripping through RGB565 (5-bit R, 6-bit G, 5-bit B precision).
 - `setpal` and `getpal` operate on the runtime CLUT, not the framebuffer. Calling `setpal` does not repaint already-drawn pixels; it changes how indices are translated to colors during the next flush.
 
+#### 6.6 Sprites
+
+Sprite drawing requires a **sprite sheet** asset bundled into the cart (see §13.1). If no sprite sheet is present, `spr` and `sspr` are no-ops.
+
+**Sprite sheet format:**  
+An indexed-color PNG of exactly **256 × 128 pixels** using **8-bit palette indices**. The sheet is divided into **8 × 8 pixel tiles** arranged in row-major order: tile 0 at the top-left, tile 1 to its right, … tile 31 at the end of row 0, tile 32 at the start of row 1, and so on. The sheet holds **512 tiles** total (32 columns × 16 rows). Palette index **0** is transparent.
+
+The sprite sheet palette replaces the default CLUT when the cart loads. Calls to `setpal` in `init()` can further adjust individual entries.
+
+```
+spr(n, x, y, flags)                    // draw sprite n at screen (x, y)
+sspr(sx, sy, sw, sh, dx, dy, flags)    // blit rect from sprite sheet to screen
+```
+
+**`spr(n, x, y, flags)`**
+
+Draws the 8 × 8 tile at sprite index `n` with its top-left corner at screen position `(x, y)`. Sprite indices address tiles in row-major order starting at the top-left of the sheet. Transparent pixels (palette index 0) are not drawn. Drawing outside screen bounds is silently clipped.
+
+**`sspr(sx, sy, sw, sh, dx, dy, flags)`**
+
+Copies a `sw × sh` rectangle from the sprite sheet — with its top-left at `(sx, sy)` in sheet pixels — to screen position `(dx, dy)`. Source coordinates outside the 256 × 128 sheet are clipped silently. Transparent pixels (index 0) are not drawn. Drawing outside screen bounds is silently clipped.
+
+**`flags` bitfield (both functions):**
+
+| Bit | Meaning |
+|-----|---------|
+| 0 | Flip horizontally |
+| 1 | Flip vertically |
+| 2–31 | Reserved; must be 0 in v1 carts |
+
 ---
 
 ### 7. Input API
@@ -335,12 +365,13 @@ loadcart(i)              → int      // loads cart i; returns 0 if invalid inde
 ### 12. Array Comparison
 
 ```
-streq(a[], b[]) → int    // 1 if null-terminated contents are equal, else 0
+streq(a[], b[])         → int    // 1 if null-terminated contents are equal, else 0
+arreq(a[], b[], len)    → int    // 1 if first len elements are equal, else 0
 ```
 
-Both parameters are read-only; string literals are accepted. Comparison is capped at `MAX_ARRAY_ELEMENTS + 1` iterations.
+Both parameters of `streq` are read-only; string literals are accepted. Comparison is capped at `MAX_ARRAY_ELEMENTS + 1` iterations.
 
-`arreq` is deferred to v2.
+`arreq` compares exactly `len` elements from `a` and `b`. Out-of-bounds reads return 0.
 
 ---
 
@@ -348,12 +379,13 @@ Both parameters are read-only; string literals are accepted. Comparison is cappe
 
 #### 13.1 Files
 
-| Format | Extension |
-|---|---|
-| Source | `.bdcart` |
-| Compiled | `.bdb` |
+| Format | Extension | Notes |
+|---|---|---|
+| Source | `.bdcart` | Cart program source |
+| Sprite sheet | `<stem>.sprites.png` | Optional; must sit alongside the source file |
+| Compiled | `.bdb` | Produced by the compiler; firmware executes this |
 
-The firmware executes compiled carts only.
+The firmware executes compiled carts only. The compiler automatically bundles a `.sprites.png` file — if present — into the `.bdb` binary during compilation. The sprite sheet must be an 8-bit indexed-color PNG of exactly 256 × 128 pixels.
 
 #### 13.2 Source Metadata
 
@@ -377,11 +409,11 @@ All multi-byte integers are little-endian.
 |---|---|---|
 | 0 | 4 | Magic: `B D B N` |
 | 4 | 1 | Format version: `1` |
-| 5 | 1 | Flags: `0` (reserved) |
+| 5 | 1 | Flags (see below) |
 | 6 | 2 | Metadata block length N |
 | 8 | N | Metadata block (raw text) |
 | 8+N | 1 | Array declaration count (0–16) |
-| … | 2×count | Array sizes: u16 LE per entry, in declaration order |
+| … | varies | Array declaration table (see below) |
 | … | 2 | `init_off` (0xFFFF = not defined) |
 | … | 2 | `update_off` |
 | … | 1 | `update` frame slot (0xFF = not bound) |
@@ -393,7 +425,30 @@ All multi-byte integers are little-endian.
 | … | 1 | `audio` t slot |
 | … | 2 | `fn_count` |
 | … | 2 | `fn_table_off` (byte offset from bytecode start) |
+| … | 33 536 | **Sprite section** (only if flags bit 0 is set; see below) |
 | … | remainder | Bytecode stream |
+
+**Flags byte:**
+
+| Bit | Meaning |
+|-----|---------|
+| 0 | Sprite section present |
+| 1–7 | Reserved; must be 0 in v1 |
+
+**Array declaration table** — one entry per declared array, in declaration order:
+
+| Field | Size |
+|---|---|
+| Element count | 2 (u16 LE) |
+| Init length | 1 (u8); 0 = zero-initialise |
+| Init bytes | init_length bytes (char codes, including null terminator if string) |
+
+**Sprite section** (present only when flags bit 0 is set):
+
+| Field | Size | Description |
+|---|---|---|
+| Palette | 768 B | 256 × RGB (3 bytes each); replaces the default CLUT at cart load time |
+| Tile data | 32 768 B | 512 × 64 bytes; each tile is 8 × 8 palette-index pixels, rows top-to-bottom, pixels left-to-right; tiles are ordered row-major from the top-left of the sheet |
 
 **Function table entry** (per user-defined function):
 
@@ -556,8 +611,9 @@ Core 1 spins at ~45 µs per sample. If `audio(t)` takes longer, the effective ra
 | Global variable table (live + 2 shadows) | 0.75 KB | 3 × 64 × 4 B |
 | Global array pool | 16 KB | 16 arrays × 256 × 4 B |
 | Evaluation stacks | 0.25 KB | 2 cores × 32 × 4 B |
-| **Total (with DMA expand)** | **~110 KB** | ~154 KB remaining |
-| **Total (without DMA expand)** | **~72 KB** | ~192 KB remaining |
+| Sprite tile buffer | 32 KB | 512 × 64 B; zeroed when no sprite sheet is present |
+| **Total (with DMA expand)** | **~142 KB** | ~122 KB remaining |
+| **Total (without DMA expand)** | **~104 KB** | ~160 KB remaining |
 
 #### 14.8 Distribution
 
@@ -575,23 +631,23 @@ Core 1 spins at ~45 µs per sample. If `audio(t)` takes longer, the effective ra
 - `init` / `update` / `draw` / `audio` lifecycle
 - `btn` / `btnp` input
 - `cls` / `pset` / `pget` / `line` / `rect` / `rectfill` / `print` graphics
-- `setpal` palette control
+- `spr` / `sspr` sprite drawing (requires `.sprites.png` asset)
+- `setpal` / `getpal` palette control
 - `abs` / `min` / `max` / `clamp` / `seed` / `rnd` math
 - `save` / `load` persistence (4 slots)
 - `cartcount` / `cartmeta` / `loadcart` cart utilities
-- `streq` string comparison
+- `streq` / `arreq` array comparison
 - `fn` user-defined functions (int args + arr args, int return)
 - Recursion (capped at 16 frames)
-- Compiled binary format (`.bdb`)
+- Compiled binary format (`.bdb`) with optional sprite section
 - Source metadata block (`// @key value`)
 
 **Deferred to later:**
 
 | Feature | Reason |
 |---|---|
-| `arreq(a, b, len)` | `streq` covers most cases |
+| Tilemap API | Requires tilemap asset format and blit infrastructure |
 | `clearsave()` | Not needed for core game loop |
-| Sprite/tile blit API (`blit`, `spr`) | Useful but adds ROM/RAM complexity |
 | Music / tracker API | Audio synthesis in cart code is sufficient for v1 |
 | Larger save slots or more than 4 slots | Extend the flash layout when needed |
 | Additional buttons or analog input | Hardware TBD |
@@ -607,7 +663,7 @@ Core 1 spins at ~45 µs per sample. If `audio(t)` takes longer, the effective ra
 ### 16. Example Cart
 
 ```
-// @title  Blink
+// @name   Blink
 // @author example
 // @id     blink-v1
 

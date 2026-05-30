@@ -1,0 +1,17 @@
+// @name   Sprite Test
+// @author pckerneis
+// @desc   Tests spr (tiles 0-4) and sspr (tiles 0-1 through 2-1)
+
+draw(frame, input) {
+  cls(0)
+
+  print("spr 0-4", 2, 2, 1)
+  spr(0, 2, 12, 0)
+  spr(1, 12, 12, 0)
+  spr(2, 22, 12, 0)
+  spr(3, 32, 12, 0)
+  spr(4, 42, 12, 0)
+
+  print("sspr (0,1)-(1,2)", 2, 30, 1)
+  sspr(0, 8, 16, 16, 2, 40, 0)
+}
