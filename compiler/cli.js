@@ -8,7 +8,7 @@
 // compiler packages its palette and tile data into the binary automatically.
 
 import { compile }                    from './compiler.js';
-import { parsePNG, packSpriteSheet } from '../web/png.js';
+import { parsePNG, packSpriteSheet } from '../shared/png.js';
 
 function extname(path) {
   const dot = path.lastIndexOf('.');

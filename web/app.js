@@ -7,7 +7,7 @@ import { drawCls, drawPset, drawRectfill, drawLine,
          drawPrint, drawRect, drawPget,
          drawSpr, drawSspr,
          blitToImageData }                             from './draw.js';
-import { parsePNG, packSpriteSheet }                   from './png.js';
+import { parsePNG, packSpriteSheet }                   from '../shared/png.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

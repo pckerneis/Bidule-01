@@ -581,6 +581,9 @@ bool vm_load(const uint8_t *bin, uint32_t len) {
     uint16_t fn_count     = ru16(p); p += 2;
     uint16_t fn_table_off = ru16(p); p += 2;
 
+    // Reset palette to firmware default before applying any sprite palette.
+    display_reset_palette();
+
     // Sprite section (flags bit 0): 256×3 palette bytes + 512×64 tile bytes
     if (flags & 0x01) {
         const uint32_t SPR_PAL_BYTES  = 256 * 3;

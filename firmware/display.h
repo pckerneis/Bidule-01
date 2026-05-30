@@ -19,6 +19,9 @@ void display_print(int x, int y, const char *s, int c);
 void display_setpal(int i, int r, int g, int b);
 int  display_getpal(int i, int chan);
 
+// Reset CLUT to the firmware default (called at cart load time).
+void display_reset_palette(void);
+
 // Sprite sheet — called from vm_load() when flags bit 0 is set.
 // pal_rgb:    256×3 bytes (R, G, B per entry); replaces the current palette.
 // tile_data:  tile_count × 64 bytes (8×8 palette-index pixels, row-major).

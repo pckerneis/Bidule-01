@@ -60,10 +60,10 @@ export async function parsePNG(bytes) {
     }
   }
 
-  if (!ihdr)                throw new Error('PNG missing IHDR chunk');
-  if (ihdr.colorType !== 3) throw new Error(`Sprite sheet must be indexed-color PNG (color type 3), got ${ihdr.colorType}`);
-  if (ihdr.bitDepth  !== 8) throw new Error(`Sprite sheet must be 8-bit indexed, got ${ihdr.bitDepth}-bit`);
-  if (!plte)                throw new Error('PNG missing PLTE chunk');
+  if (!ihdr)                 throw new Error('PNG missing IHDR chunk');
+  if (ihdr.colorType !== 3)  throw new Error(`Sprite sheet must be indexed-color PNG (color type 3), got ${ihdr.colorType}`);
+  if (ihdr.bitDepth  !== 8)  throw new Error(`Sprite sheet must be 8-bit indexed, got ${ihdr.bitDepth}-bit`);
+  if (!plte)                 throw new Error('PNG missing PLTE chunk');
   if (idatBufs.length === 0) throw new Error('PNG missing IDAT chunk');
 
   let idatTotal = 0;

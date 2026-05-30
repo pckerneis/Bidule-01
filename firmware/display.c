@@ -112,6 +112,10 @@ static void init_palette(void) {
     }
 }
 
+void display_reset_palette(void) {
+    init_palette();
+}
+
 // --- Font (Monogram by Datagoblin, ASCII 32-126, 5×9 px) ---------------------
 
 #define FONT_W 5
