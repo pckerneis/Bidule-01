@@ -107,15 +107,15 @@ export const FONT = [
 
 // ─── Display helpers ──────────────────────────────────────────────────────────
 
-const W = 128, H = 64;
+const W = 160, H = 120;
 
 function fbPixel(fb, x, y, c) {
   if (x >= 0 && x < W && y >= 0 && y < H)
-    fb[y * W + x] = c ? 1 : 0;
+    fb[y * W + x] = c & 0xFF;
 }
 
 export function drawCls(fb, c) {
-  fb.fill(c ? 1 : 0);
+  fb.fill(c & 0xFF);
 }
 
 export function drawPset(fb, x, y, c) {
@@ -159,13 +159,26 @@ export function drawPrint(fb, str, x, y, c) {
   }
 }
 
-// Blit the 1-bit framebuffer to an ImageData at the given pixel scale.
-// ON / OFF are [R,G,B] triples.
-export function blitToImageData(fb, imgData, scale, ON, OFF) {
+export function drawPget(fb, x, y) {
+  x=x|0; y=y|0;
+  if (x < 0 || x >= W || y < 0 || y >= H) return 0;
+  return fb[y * W + x];
+}
+
+export function drawRect(fb, x, y, w, h, c) {
+  x=x|0; y=y|0; w=w|0; h=h|0;
+  for (let px = x; px < x+w; px++) { fbPixel(fb, px, y,     c); fbPixel(fb, px, y+h-1, c); }
+  for (let py = y; py < y+h; py++) { fbPixel(fb, x,     py, c); fbPixel(fb, x+w-1, py, c); }
+}
+
+// Blit the 8-bit indexed framebuffer to an ImageData at the given pixel scale.
+// palette is a Uint8Array of 256*3 bytes: [R0,G0,B0, R1,G1,B1, ...].
+export function blitToImageData(fb, imgData, scale, palette) {
   const d = imgData.data;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
-      const [R,G,B] = fb[y*W+x] ? ON : OFF;
+      const pi = fb[y*W+x] * 3;
+      const R = palette[pi], G = palette[pi+1], B = palette[pi+2];
       for (let sy = 0; sy < scale; sy++) {
         for (let sx = 0; sx < scale; sx++) {
           const i = ((y*scale+sy)*W*scale + (x*scale+sx)) * 4;

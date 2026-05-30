@@ -4,18 +4,18 @@
 import { VM }                                          from './vm.js';
 import { compile }                                     from '../compiler/compiler.js';
 import { drawCls, drawPset, drawRectfill, drawLine,
-         drawPrint, blitToImageData }                  from './font.js';
+         drawPrint, drawRect, drawPget,
+         blitToImageData }                             from './font.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const W = 128, H = 64, SCALE = 4;
-const ON  = [74,  246, 38];
-const OFF = [0,   18,  0];
+const W = 160, H = 120, SCALE = 2;
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
-const fb   = new Uint8Array(W * H);
-const btns = new Uint8Array(6);
+const fb      = new Uint8Array(W * H);
+const palette = new Uint8Array(256 * 3);
+const btns    = new Uint8Array(6);
 const prev = new Uint8Array(6);
 
 let carts         = [];   // all known carts (UI list, updated anytime)
@@ -26,17 +26,61 @@ let frame         = 0;
 let loopId        = null;
 let currentBinary = null; // last binary loaded, so audio can catch up after startAudio()
 
+// ─── Palette ──────────────────────────────────────────────────────────────────
+
+// Default 256-entry CLUT. Indices 0-15 are standard; 16-255 are black by default.
+// Carts may override any entry with setpal() in init().
+const DEFAULT_PALETTE = [
+//  R    G    B
+    0,   0,   0,   // 0  black
+  255, 255, 255,   // 1  white
+  255,   0,   0,   // 2  red
+    0, 206,   0,   // 3  green
+    0,   0, 255,   // 4  blue
+  255, 255,   0,   // 5  yellow
+    0, 255, 255,   // 6  cyan
+  255,   0, 255,   // 7  magenta
+  132,   0,   0,   // 8  dark red
+    0, 100,   0,   // 9  dark green
+    0,   0, 132,   // 10 dark blue
+  214, 148,   0,   // 11 orange
+    0, 132, 132,   // 12 teal
+  132,   0, 132,   // 13 purple
+  189, 189, 189,   // 14 light gray
+  115, 115, 115,   // 15 gray
+];
+
+function resetPalette() {
+  palette.fill(0);
+  for (let i = 0; i < DEFAULT_PALETTE.length; i++) palette[i] = DEFAULT_PALETTE[i];
+}
+
+// Apply RGB565 precision round-trip (mirrors firmware storage)
+function setpalEntry(i, r, g, b) {
+  if (i < 0 || i > 255) return;
+  const r5 = (r >> 3) & 0x1F, g6 = (g >> 2) & 0x3F, b5 = (b >> 3) & 0x1F;
+  palette[i*3+0] = (r5 << 3) | (r5 >> 2);
+  palette[i*3+1] = (g6 << 2) | (g6 >> 4);
+  palette[i*3+2] = (b5 << 3) | (b5 >> 2);
+}
+
+resetPalette();
+
 // ─── VM ───────────────────────────────────────────────────────────────────────
 
 const vm = new VM({
   btn:  i => btns[i & 7],
   btnp: i => (btns[i & 7] && !prev[i & 7]) ? 1 : 0,
 
-  cls:      c           => drawCls(fb, c),
-  pset:     (x,y,c)     => drawPset(fb, x, y, c),
-  rectfill: (x,y,w,h,c) => drawRectfill(fb, x, y, w, h, c),
+  cls:      c               => drawCls(fb, c),
+  pset:     (x,y,c)         => drawPset(fb, x, y, c),
+  pget:     (x,y)           => drawPget(fb, x, y),
+  rectfill: (x,y,w,h,c)     => drawRectfill(fb, x, y, w, h, c),
+  rect:     (x,y,w,h,c)     => drawRect(fb, x, y, w, h, c),
   line:     (x0,y0,x1,y1,c) => drawLine(fb, x0, y0, x1, y1, c),
-  print:    (text,x,y,c) => drawPrint(fb, text, x, y, c),
+  print:    (text,x,y,c)    => drawPrint(fb, text, x, y, c),
+  setpal:   (i,r,g,b)       => setpalEntry(i, r, g, b),
+  getpal:   (i,ch)          => (i>=0&&i<=255&&ch>=0&&ch<=2) ? palette[i*3+ch] : 0,
 
   save:  (slot, val) => persist.save(slot, val),
   load:  slot        => persist.load(slot),
@@ -120,6 +164,7 @@ function parseMeta(binary) {
 
 function loadAndRun(binary) {
   if (running) stopLoop();
+  resetPalette();
   if (!vm.load(binary)) { showError('Invalid cart binary'); return false; }
   currentBinary = binary;
   audioLoad(binary);
@@ -173,8 +218,8 @@ async function reboot() {
   if (bootCarts.length === 0) {
     // Nothing to run — show a placeholder screen.
     drawCls(fb, 0);
-    drawPrint(fb, 'BIDULE  01', 24, 24, 1);
-    drawPrint(fb, 'no carts found', 14, 38, 1);
+    drawPrint(fb, 'BIDULE  01', 50, 52, 1);
+    drawPrint(fb, 'no carts found', 38, 66, 1);
     blit();
     return;
   }
@@ -214,9 +259,9 @@ function halt(err) {
   const words = msg.replace(/\s+/g, ' ').trim().split(' ');
   let line = '', y = 13;
   for (const w of words) {
-    if ((line + w).length > 19 && line) {
+    if ((line + w).length > 25 && line) {
       drawPrint(fb, line.trim(), 2, y, 1); y += 10; line = '';
-      if (y > 54) break;
+      if (y > 100) break;
     }
     line += w + ' ';
   }
@@ -264,7 +309,7 @@ function showNoise() {
 
 function blit() {
   const img = ctx2d.createImageData(W * SCALE, H * SCALE);
-  blitToImageData(fb, img, SCALE, ON, OFF);
+  blitToImageData(fb, img, SCALE, palette);
   ctx2d.putImageData(img, 0, 0);
 }
 
