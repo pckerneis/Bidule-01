@@ -57,7 +57,7 @@ A name may be declared only once. Re-declaring is a compile-time error.
 
 Assigning an `arr` variable to another `arr` variable is a **compile-time error**. Arrays do not alias.
 
-Maximum **256 global variables** per cart (int and arr combined). Maximum **16 arr declarations** per cart.
+Maximum **256 global variables** per cart (int and arr combined). Arrays share a **16 KB pool** (4 096 `int32` elements); total declared elements must not exceed this budget. Maximum **255 arr declarations** per cart (u8 binary encoding limit).
 
 Uninitialised int variables default to `0`.
 
@@ -412,7 +412,7 @@ All multi-byte integers are little-endian.
 | 5 | 1 | Flags (see below) |
 | 6 | 2 | Metadata block length N |
 | 8 | N | Metadata block (raw text) |
-| 8+N | 1 | Array declaration count (0–16) |
+| 8+N | 1 | Array declaration count (0–255) |
 | … | varies | Array declaration table (see below) |
 | … | 2 | `init_off` (0xFFFF = not defined) |
 | … | 2 | `update_off` |
@@ -521,8 +521,9 @@ Stack-based interpreter. 1-byte opcode, variable-width operands.
 |---|---|
 | Max source size | 64 KB |
 | Max bytecode size | 16 KB |
-| Max array declarations | 16 |
+| Max array declarations | 255 (u8 encoding) |
 | Max elements per array | 256 |
+| Max total array elements | 4 096 (16 KB pool) |
 | Max global variables | 256 |
 | Max string literal length | 255 chars |
 | Max user-defined functions | 64 |
@@ -609,7 +610,7 @@ Core 1 spins at ~45 µs per sample. If `audio(t)` takes longer, the effective ra
 | CLUT | 0.5 KB | 256 × RGB565 |
 | Cart bytecode | 16 KB | |
 | Global variable table (live + 2 shadows) | 3 KB | 3 × 256 × 4 B |
-| Global array pool | 16 KB | 16 arrays × 256 × 4 B |
+| Global array pool | 16 KB | flat pool; 4 096 int32 elements shared across all array declarations |
 | Evaluation stacks | 0.25 KB | 2 cores × 32 × 4 B |
 | Sprite tile buffer | 32 KB | 512 × 64 B; zeroed when no sprite sheet is present |
 | **Total (with DMA expand)** | **~144 KB** | ~120 KB remaining |

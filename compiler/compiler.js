@@ -265,8 +265,13 @@ class Ctx {
       this.errors.push(`line ${line}: '${name}' already declared`);
       return;
     }
-    if (this.arrayDecls.length >= 16) {
-      this.errors.push(`line ${line}: array declaration limit reached (max 16)`);
+    if (this.arrayDecls.length >= 255) {
+      this.errors.push(`line ${line}: array declaration limit reached (max 255)`);
+      return;
+    }
+    const poolUsed = this.arrayDecls.reduce((s, d) => s + d.size, 0);
+    if (poolUsed + size > 4096) {
+      this.errors.push(`line ${line}: array pool exhausted (max 4096 elements across all arrays)`);
       return;
     }
     if (size < 1) {

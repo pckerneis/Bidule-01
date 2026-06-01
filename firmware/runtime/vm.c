@@ -12,8 +12,9 @@
 #define MAX_VARS        256
 #define MAX_BYTECODE    16384
 #define STACK_SIZE      32
-#define MAX_ARR_DECLS   16
+#define MAX_ARR_DECLS   255     // u8 arridx in opcodes; binary format also uses u8 count
 #define MAX_ARR_ELEMS   256
+#define POOL_ELEMS      4096    // 16 KB pool / 4 bytes per element
 #define MAX_USER_FNS    64
 #define MAX_FN_PARAMS   8
 #define MAX_CALL_DEPTH  8
@@ -43,8 +44,9 @@ static struct {
     uint16_t code_len;
 
     // Mutable array pool (declared with name[N] or name = "str" syntax)
-    int32_t  arrpool[MAX_ARR_DECLS][MAX_ARR_ELEMS];
-    uint8_t  arrdeclsize[MAX_ARR_DECLS];
+    int32_t  arrpool[POOL_ELEMS];           // flat pool shared by all array declarations
+    uint16_t arrbase[MAX_ARR_DECLS];        // starting index in arrpool for each array
+    uint8_t  arrdeclsize[MAX_ARR_DECLS];    // element count for each array
     uint8_t  arrdecl_count;
 
     // Entry points (0xFFFF = lifecycle function not defined in cart)
@@ -116,7 +118,7 @@ static int32_t arr_elem(Value v, int idx) {
     if (v.type == VALUE_ARR_MUT) {
         int i = v.i;
         if (i >= 0 && i < vm.arrdecl_count && idx >= 0 && idx < vm.arrdeclsize[i])
-            return vm.arrpool[i][idx];
+            return vm.arrpool[vm.arrbase[i] + idx];
         return 0;
     }
     return 0;
@@ -141,7 +143,7 @@ static void arr_to_cstr(Value v, char *buf, int bufsize) {
         if (idx >= 0 && idx < vm.arrdecl_count) {
             int size = vm.arrdeclsize[idx];
             for (int j = 0; j < size && n < bufsize - 1; j++) {
-                int32_t c = vm.arrpool[idx][j];
+                int32_t c = vm.arrpool[vm.arrbase[idx] + j];
                 if (c == 0) break;
                 buf[n++] = (char)(c & 0x7F);
             }
@@ -250,10 +252,10 @@ static Value call_builtin(uint8_t id, Value *a) {
             if (dest >= 0 && dest < vm.arrdecl_count) {
                 int size = vm.arrdeclsize[dest];
                 while (written < size - 1 && val[written]) {
-                    vm.arrpool[dest][written] = (int32_t)(unsigned char)val[written];
+                    vm.arrpool[vm.arrbase[dest] + written] = (int32_t)(unsigned char)val[written];
                     written++;
                 }
-                if (written < size) vm.arrpool[dest][written] = 0;
+                if (written < size) vm.arrpool[vm.arrbase[dest] + written] = 0;
             }
         }
         return (Value){ VALUE_INT, written };
@@ -430,7 +432,7 @@ static Value exec(uint16_t entry, Value *globals, Value *stk) {
             uint8_t slot = R8();
             int     idx  = (int)POP().i;
             if (slot < vm.arrdecl_count && idx >= 0 && idx < vm.arrdeclsize[slot])
-                PUSH_I(vm.arrpool[slot][idx]);
+                PUSH_I(vm.arrpool[vm.arrbase[slot] + idx]);
             else
                 PUSH_I(0);
             break;
@@ -440,7 +442,7 @@ static Value exec(uint16_t entry, Value *globals, Value *stk) {
             Value   val  = POP();
             int     idx  = (int)POP().i;
             if (slot < vm.arrdecl_count && idx >= 0 && idx < vm.arrdeclsize[slot])
-                vm.arrpool[slot][idx] = val.i;
+                vm.arrpool[vm.arrbase[slot] + idx] = val.i;
             break;
         }
         case OP_ARR_LEN: {
@@ -463,7 +465,7 @@ static Value exec(uint16_t entry, Value *globals, Value *stk) {
             if (v.type == VALUE_ARR_MUT) {
                 int i = v.i;
                 if (i >= 0 && i < vm.arrdecl_count && idx >= 0 && idx < vm.arrdeclsize[i])
-                    vm.arrpool[i][idx] = val.i;
+                    vm.arrpool[vm.arrbase[i] + idx] = val.i;
             }
             // VALUE_ARR_LIT: bytecode is read-only — silent no-op
             break;
@@ -555,15 +557,20 @@ bool vm_load(const uint8_t *bin, uint32_t len) {
     uint8_t ndecl = *p++;
     if (ndecl > MAX_ARR_DECLS) return false;
     vm.arrdecl_count = ndecl;
+    uint16_t pool_used = 0;
     for (int i = 0; i < ndecl; i++) {
         if (p + 3 > end) return false;  // size (2) + initLen (1)
         uint16_t sz      = ru16(p); p += 2;
         uint8_t  initLen = *p++;
-        vm.arrdeclsize[i] = (sz > MAX_ARR_ELEMS) ? MAX_ARR_ELEMS : (uint8_t)sz;
+        uint8_t  clamped = (sz > MAX_ARR_ELEMS) ? (uint8_t)MAX_ARR_ELEMS : (uint8_t)sz;
+        if ((uint32_t)pool_used + clamped > POOL_ELEMS) return false;
+        vm.arrbase[i]    = pool_used;
+        vm.arrdeclsize[i] = clamped;
+        pool_used += clamped;
         if (initLen > 0) {
             if (p + initLen > end) return false;
-            for (int j = 0; j < initLen && j < vm.arrdeclsize[i]; j++)
-                vm.arrpool[i][j] = (int32_t)(*p++);
+            for (int j = 0; j < initLen && j < clamped; j++)
+                vm.arrpool[vm.arrbase[i] + j] = (int32_t)(*p++);
         }
     }
 
