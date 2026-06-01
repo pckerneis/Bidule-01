@@ -369,7 +369,7 @@ streq(a[], b[])         → int    // 1 if null-terminated contents are equal, e
 arreq(a[], b[], len)    → int    // 1 if first len elements are equal, else 0
 ```
 
-Both parameters of `streq` are read-only; string literals are accepted. Comparison is capped at `MAX_ARRAY_ELEMENTS + 1` iterations.
+Both parameters of `streq` are read-only; string literals are accepted. Comparison is capped at 4 097 iterations (pool size + 1).
 
 `arreq` compares exactly `len` elements from `a` and `b`. Out-of-bounds reads return 0.
 
@@ -522,7 +522,7 @@ Stack-based interpreter. 1-byte opcode, variable-width operands.
 | Max source size | 64 KB |
 | Max bytecode size | 16 KB |
 | Max array declarations | 255 (u8 encoding) |
-| Max elements per array | 256 |
+| Max elements per array | 4 096 (pool budget; a single array may claim the whole pool) |
 | Max total array elements | 4 096 (16 KB pool) |
 | Max global variables | 256 |
 | Max string literal length | 255 chars |

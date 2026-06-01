@@ -13,12 +13,11 @@
 #define MAX_BYTECODE    16384
 #define STACK_SIZE      32
 #define MAX_ARR_DECLS   255     // u8 arridx in opcodes; binary format also uses u8 count
-#define MAX_ARR_ELEMS   256
-#define POOL_ELEMS      4096    // 16 KB pool / 4 bytes per element
+#define POOL_ELEMS      4096    // 16 KB pool / 4 bytes per element; also the per-array ceiling
 #define MAX_USER_FNS    64
 #define MAX_FN_PARAMS   8
 #define MAX_CALL_DEPTH  8
-#define MAX_PRINT_BUF   288   // covers max pool array (256) + int digits + margin
+#define MAX_PRINT_BUF   288   // practical truncation limit for print(); display fits ~26 chars/line
 
 // ─── Value ───────────────────────────────────────────────────────────────────
 
@@ -46,7 +45,7 @@ static struct {
     // Mutable array pool (declared with name[N] or name = "str" syntax)
     int32_t  arrpool[POOL_ELEMS];           // flat pool shared by all array declarations
     uint16_t arrbase[MAX_ARR_DECLS];        // starting index in arrpool for each array
-    uint8_t  arrdeclsize[MAX_ARR_DECLS];    // element count for each array
+    uint16_t arrdeclsize[MAX_ARR_DECLS];    // element count for each array (up to POOL_ELEMS)
     uint8_t  arrdecl_count;
 
     // Entry points (0xFFFF = lifecycle function not defined in cart)
@@ -217,7 +216,7 @@ static Value call_builtin(uint8_t id, Value *a) {
 
     // Array comparison
     case BUILTIN_STREQ: {
-        for (int i = 0; i <= MAX_ARR_ELEMS; i++) {
+        for (int i = 0; i <= POOL_ELEMS; i++) {
             int32_t ea = arr_elem(a[0], i);
             int32_t eb = arr_elem(a[1], i);
             if (ea != eb) return (Value){ VALUE_INT, 0 };
@@ -562,11 +561,11 @@ bool vm_load(const uint8_t *bin, uint32_t len) {
         if (p + 3 > end) return false;  // size (2) + initLen (1)
         uint16_t sz      = ru16(p); p += 2;
         uint8_t  initLen = *p++;
-        uint8_t  clamped = (sz > MAX_ARR_ELEMS) ? (uint8_t)MAX_ARR_ELEMS : (uint8_t)sz;
+        uint16_t clamped = sz > POOL_ELEMS ? (uint16_t)POOL_ELEMS : sz;
         if ((uint32_t)pool_used + clamped > POOL_ELEMS) return false;
-        vm.arrbase[i]    = pool_used;
+        vm.arrbase[i]     = pool_used;
         vm.arrdeclsize[i] = clamped;
-        pool_used += clamped;
+        pool_used        += clamped;
         if (initLen > 0) {
             if (p + initLen > end) return false;
             for (int j = 0; j < initLen && j < clamped; j++)
