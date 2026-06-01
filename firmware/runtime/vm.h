@@ -9,8 +9,8 @@
 //   OP_PUSH_INT      [i32 LE]             push 32-bit integer constant
 //   OP_PUSH_LIT      [u8 len][len bytes]  push temporary read-only arr_ref from inline data;
 //                                         T_LIT value = bytecode offset of first char code
-//   OP_LOAD          [u8]                 push int global variable by slot (0–63)
-//   OP_STORE         [u8]                 pop → global variable slot; T_LIT stored as -(off+1)
+//   OP_LOAD          [u8]                 push int global variable by slot (0–255)
+//   OP_STORE         [u8]                 pop → global variable slot (0–255); T_LIT stored as -(off+1)
 //   OP_LOAD_ARR      [u8]                 push arr_ref global; decodes: slot<0 → T_LIT, ≥0 → T_MUT
 //   OP_DUP                                duplicate top of stack
 //   OP_ARR_GET       [u8 slot]            pop index; push pool[slot][index] (0 if OOB)

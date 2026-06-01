@@ -233,8 +233,8 @@ class Ctx {
       return 0;
     }
     if (!this.vars.has(name)) {
-      if (this.vars.size >= 64) {
-        this.errors.push(`line ${line}: variable limit reached (max 64)`);
+      if (this.vars.size >= 256) {
+        this.errors.push(`line ${line}: variable limit reached (max 256)`);
         return 0;
       }
       this.vars.set(name, { slot: this.vars.size, kind: null });

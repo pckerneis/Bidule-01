@@ -9,7 +9,7 @@
 
 // ─── Limits ───────────────────────────────────────────────────────────────────
 
-#define MAX_VARS        64
+#define MAX_VARS        256
 #define MAX_BYTECODE    16384
 #define STACK_SIZE      32
 #define MAX_ARR_DECLS   16

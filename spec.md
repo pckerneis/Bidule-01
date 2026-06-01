@@ -57,7 +57,7 @@ A name may be declared only once. Re-declaring is a compile-time error.
 
 Assigning an `arr` variable to another `arr` variable is a **compile-time error**. Arrays do not alias.
 
-Maximum **64 global variables** per cart (int and arr combined). Maximum **16 arr declarations** per cart.
+Maximum **256 global variables** per cart (int and arr combined). Maximum **16 arr declarations** per cart.
 
 Uninitialised int variables default to `0`.
 
@@ -323,7 +323,7 @@ Random seed is initialised to a fixed constant at cart start.
 - `audio(t)` must not write to any global variable or array element. Any write is a compile-time error.
 
 **Read-only variable access:**  
-`audio(t)` reads from a shadow copy of the global variable table (int values only; array data is shared directly). The runtime maintains two shadow buffers (A and B, 64 × 4 bytes each). After each `draw()`, the live variable table is copied into the inactive buffer and the active index is atomically flipped. Core 1 always reads from the active buffer. Maximum read latency: one frame (~33 ms).
+`audio(t)` reads from a shadow copy of the global variable table (int values only; array data is shared directly). The runtime maintains two shadow buffers (A and B, 256 × 4 bytes each). After each `draw()`, the live variable table is copied into the inactive buffer and the active index is atomically flipped. Core 1 always reads from the active buffer. Maximum read latency: one frame (~33 ms).
 
 ---
 
@@ -507,7 +507,7 @@ Stack-based interpreter. 1-byte opcode, variable-width operands.
 
 | Space | Range | Used by |
 |---|---|---|
-| Scalar variable slots | 0–63 | `LOAD`, `STORE`, parameter slots |
+| Scalar variable slots | 0–255 | `LOAD`, `STORE`, parameter slots |
 | Array pool indices | 0–15 | `ARR_GET`, `ARR_SET`, `ARR_LEN`, `PUSH_ARR` |
 | Function table indices | 0–fn_count−1 | `CALL_FN` |
 
@@ -523,7 +523,7 @@ Stack-based interpreter. 1-byte opcode, variable-width operands.
 | Max bytecode size | 16 KB |
 | Max array declarations | 16 |
 | Max elements per array | 256 |
-| Max global variables | 64 |
+| Max global variables | 256 |
 | Max string literal length | 255 chars |
 | Max user-defined functions | 64 |
 | Max call stack depth | 16 frames |
@@ -608,12 +608,12 @@ Core 1 spins at ~45 µs per sample. If `audio(t)` takes longer, the effective ra
 | Line-double expand buffer (optional) | ~38 KB | 320×240×2 B RGB565, for DMA flush |
 | CLUT | 0.5 KB | 256 × RGB565 |
 | Cart bytecode | 16 KB | |
-| Global variable table (live + 2 shadows) | 0.75 KB | 3 × 64 × 4 B |
+| Global variable table (live + 2 shadows) | 3 KB | 3 × 256 × 4 B |
 | Global array pool | 16 KB | 16 arrays × 256 × 4 B |
 | Evaluation stacks | 0.25 KB | 2 cores × 32 × 4 B |
 | Sprite tile buffer | 32 KB | 512 × 64 B; zeroed when no sprite sheet is present |
-| **Total (with DMA expand)** | **~142 KB** | ~122 KB remaining |
-| **Total (without DMA expand)** | **~104 KB** | ~160 KB remaining |
+| **Total (with DMA expand)** | **~144 KB** | ~120 KB remaining |
+| **Total (without DMA expand)** | **~106 KB** | ~158 KB remaining |
 
 #### 14.8 Distribution
 
