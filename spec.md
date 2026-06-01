@@ -500,7 +500,7 @@ Stack-based interpreter. 1-byte opcode, variable-width operands.
 | `PEEK_JUMP_T` | `0x53` | i16 | Peek; jump if nonzero (for `\|\|`) |
 | `PEEK_JUMP_F` | `0x54` | i16 | Peek; jump if zero (for `&&`) |
 | `CALL` | `0x60` | u8 id, u8 argc | Call built-in id; pops argc args; pushes return value if non-void |
-| `CALL_FN` | `0x61` | u8 fnidx, u8 argc | Call user-defined function by function table index |
+| `CALL_FN` | `0x61` | u16 fnidx LE, u8 argc | Call user-defined function by function table index |
 | `RET` | `0xFF` | — | Return. For `audio(t)`: pops top as sample. For `fn`: pops top as return value. For others: stack empty. |
 
 **Index spaces:**
@@ -508,7 +508,7 @@ Stack-based interpreter. 1-byte opcode, variable-width operands.
 | Space | Range | Used by |
 |---|---|---|
 | Scalar variable slots | 0–255 | `LOAD`, `STORE`, parameter slots |
-| Array pool indices | 0–15 | `ARR_GET`, `ARR_SET`, `ARR_LEN`, `PUSH_ARR` |
+| Array pool indices | 0–254 (u8 arridx) | `ARR_GET`, `ARR_SET`, `ARR_LEN`, `PUSH_ARR` |
 | Function table indices | 0–fn_count−1 | `CALL_FN` |
 
 **Compound assignment** (`arr[i] += v`) compiles to: `<i>`, `DUP`, `ARR_GET`, `<v>`, `<op>`, `ARR_SET`.
@@ -526,7 +526,7 @@ Stack-based interpreter. 1-byte opcode, variable-width operands.
 | Max total array elements | 4 096 (16 KB pool) |
 | Max global variables | 256 |
 | Max string literal length | 255 chars |
-| Max user-defined functions | 64 |
+| Max user-defined functions | bounded by bytecode size (16 KB) |
 | Max call stack depth | 16 frames |
 | Evaluation stack depth | 32 slots |
 

@@ -14,7 +14,7 @@
 #define STACK_SIZE      32
 #define MAX_ARR_DECLS   255     // u8 arridx in opcodes; binary format also uses u8 count
 #define POOL_ELEMS      4096    // 16 KB pool / 4 bytes per element; also the per-array ceiling
-#define MAX_USER_FNS    64
+#define MAX_USER_FNS    255     // practical ceiling within 16 KB bytecode; no spec limit
 #define MAX_FN_PARAMS   8
 #define MAX_CALL_DEPTH  8
 #define MAX_PRINT_BUF   288   // practical truncation limit for print(); display fits ~26 chars/line

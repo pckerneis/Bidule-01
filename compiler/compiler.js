@@ -224,6 +224,10 @@ class Ctx {
       this.errors.push(`line ${line}: '${name}' defined more than once`);
       return;
     }
+    if (this.userFns.size >= 255) {
+      this.errors.push(`line ${line}: user-defined function limit reached (max 255)`);
+      return;
+    }
     this.userFns.set(name, { index: this.userFns.size, paramCount, writableParamIndices });
   }
 
