@@ -519,7 +519,6 @@ Stack-based interpreter. 1-byte opcode, variable-width operands.
 
 | Limit | Value |
 |---|---|
-| Max source size | 64 KB |
 | Max bytecode size | 16 KB |
 | Max array declarations | 255 (u8 encoding) |
 | Max elements per array | 4 096 (pool budget; a single array may claim the whole pool) |
